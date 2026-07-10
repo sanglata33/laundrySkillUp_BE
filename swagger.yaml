@@ -1,0 +1,2641 @@
+openapi: 3.0.3
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  LAUNDRY SERVICE API — OpenAPI 3.0 Specification
+#  Version: 3.0.0
+#  Author: Backend Architect
+#
+#  Base URL (dev):  http://localhost:5000/api
+#  Base URL (prod): https://your-domain.com/api
+#
+#  Authentication: JWT Bearer Token (Access Token)
+#    - Lấy token từ POST /auth/login hoặc POST /auth/verify-otp
+#    - Truyền lên header: Authorization: Bearer <accessToken>
+#    - Refresh Token được lưu trong HttpOnly Cookie (tự động gửi bởi browser)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+info:
+  title: Laundry Service API
+  description: |
+    ## 🧺 Tổng quan
+    API cho nền tảng dịch vụ Giặt ủi trực tuyến. Hệ thống hỗ trợ:
+    - **Khách hàng (Customer)**: Đặt đơn giặt, theo dõi trạng thái, thanh toán
+    - **Nhân viên (Staff)**: Xử lý đơn hàng, cập nhật trạng thái, upload ảnh
+    - **Quản trị viên (Admin)**: Toàn quyền quản lý hệ thống
+
+    ## 🔐 Xác thực
+    Hệ thống hỗ trợ **2 luồng đăng nhập**:
+
+    ### Luồng 1: Email + Password (dành cho Admin & Staff)
+    ```
+    POST /auth/register → POST /auth/login → nhận { accessToken }
+    ```
+
+    ### Luồng 2: SĐT + OTP (dành cho Customer — không cần password)
+    ```
+    POST /auth/send-otp → POST /auth/verify-otp → nhận { accessToken }
+    ```
+
+    ### Cách truyền Token lên Header
+    ```
+    Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+    ```
+
+    ### Refresh Token
+    - Được lưu trong **HttpOnly Cookie** (`refreshToken`), browser tự gửi kèm
+    - Khi access token hết hạn, gọi `POST /auth/refresh-token` để cấp lại
+
+    ## 📦 Luồng trạng thái đơn hàng
+    ```
+    received → washing → drying → delivering → completed
+        ↓          ↓        ↓           ↓
+    cancelled  cancelled cancelled  cancelled
+    ```
+    *(Customer chỉ hủy được khi status = received. Admin hủy được mọi lúc trừ completed)*
+
+    ## 📝 Cấu trúc Response chuẩn
+    Mọi response đều theo format:
+    ```json
+    {
+      "success": true,
+      "message": "Mô tả kết quả",
+      "data": { ... },
+      "pagination": { "total": 100, "page": 1, "limit": 20, "totalPages": 5 }
+    }
+    ```
+  version: 3.0.0
+  contact:
+    name: Laundry Service Dev Team
+    email: dev@laundryservice.vn
+
+servers:
+  - url: http://localhost:5000/api
+    description: Development Server (Local)
+  - url: https://your-domain.com/api
+    description: Production Server
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  SECURITY SCHEMES
+# ═══════════════════════════════════════════════════════════════════════════════
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT Access Token. Lấy từ response của `/auth/login` hoặc `/auth/verify-otp`.
+        Truyền vào header: `Authorization: Bearer <token>`
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  #  SCHEMAS (Data Models / Types)
+  #  FE có thể dùng phần này để tạo TypeScript Interface/Type
+  # ═══════════════════════════════════════════════════════════════════════════
+  schemas:
+
+    # ─── USER ─────────────────────────────────────────────────────────────────
+    User:
+      type: object
+      description: Thông tin người dùng (không bao gồm password)
+      properties:
+        _id:
+          type: string
+          example: "64f1a2b3c4d5e6f7a8b9c0d1"
+          description: MongoDB ObjectId
+        name:
+          type: string
+          example: "Nguyễn Văn An"
+          description: Họ và tên
+        email:
+          type: string
+          format: email
+          example: "nguyenvanan@gmail.com"
+          description: Email (optional — chỉ có với luồng email+password)
+          nullable: true
+        phone:
+          type: string
+          example: "0912345678"
+          description: Số điện thoại (optional — chỉ có với luồng OTP)
+          nullable: true
+        address:
+          type: string
+          example: "123 Lê Lợi, Quận 1, TP.HCM"
+          nullable: true
+        role:
+          type: string
+          enum: [customer, staff, admin]
+          example: "customer"
+          description: Vai trò người dùng
+        isActive:
+          type: boolean
+          example: true
+        isPhoneVerified:
+          type: boolean
+          example: false
+          description: SĐT đã được xác thực qua OTP chưa
+        createdAt:
+          type: string
+          format: date-time
+          example: "2024-01-15T10:30:00.000Z"
+        updatedAt:
+          type: string
+          format: date-time
+          example: "2024-06-20T08:00:00.000Z"
+
+    # ─── SERVICE (Gói dịch vụ) ────────────────────────────────────────────────
+    Service:
+      type: object
+      description: Gói dịch vụ giặt ủi
+      properties:
+        _id:
+          type: string
+          example: "64f1a2b3c4d5e6f7a8b9c0d2"
+        name:
+          type: string
+          example: "Giặt + Sấy thường"
+          description: Tên dịch vụ (unique)
+        description:
+          type: string
+          example: "Giặt máy kết hợp sấy khô, phù hợp quần áo hàng ngày"
+          nullable: true
+        priceType:
+          type: string
+          enum: [per_kg, per_item]
+          example: "per_kg"
+          description: |
+            Loại tính giá:
+            - `per_kg`: Tính theo kg (vd: 25.000đ/kg)
+            - `per_item`: Tính theo món (vd: 80.000đ/món áo vest)
+        price:
+          type: number
+          example: 25000
+          description: Đơn giá (VNĐ). Tổng tiền = price × quantity
+        estimatedHours:
+          type: number
+          example: 24
+          description: Thời gian xử lý ước tính (đơn vị giờ)
+        isActive:
+          type: boolean
+          example: true
+          description: Dịch vụ có đang được cung cấp không
+        createdAt:
+          type: string
+          format: date-time
+          example: "2024-01-10T08:00:00.000Z"
+        updatedAt:
+          type: string
+          format: date-time
+          example: "2024-06-01T09:00:00.000Z"
+
+    # ─── STATUS HISTORY (Lịch sử trạng thái đơn hàng) ─────────────────────────
+    StatusHistoryItem:
+      type: object
+      description: Một bản ghi trong lịch sử thay đổi trạng thái
+      properties:
+        status:
+          type: string
+          enum: [received, washing, drying, delivering, completed, cancelled]
+          example: "washing"
+        note:
+          type: string
+          example: "Bắt đầu giặt lúc 9h sáng"
+          nullable: true
+        updatedBy:
+          oneOf:
+            - $ref: '#/components/schemas/UserRef'
+            - type: string
+          description: Người cập nhật (có thể là ObjectId string hoặc object khi được populate)
+          example: "64f1a2b3c4d5e6f7a8b9c0d5"
+        timestamp:
+          type: string
+          format: date-time
+          example: "2024-06-20T09:00:00.000Z"
+
+    # ─── STAFF NOTE (Ghi chú nhân viên) ─────────────────────────────────────
+    StaffNote:
+      type: object
+      description: Ghi chú của nhân viên về đơn hàng
+      properties:
+        _id:
+          type: string
+          example: "64f1a2b3c4d5e6f7a8b9c0d9"
+        content:
+          type: string
+          example: "Áo sơ mi bị ố vàng nhẹ, đã dùng tẩy chuyên dụng"
+          maxLength: 500
+        createdBy:
+          oneOf:
+            - $ref: '#/components/schemas/UserRef'
+            - type: string
+          description: Nhân viên tạo ghi chú
+        createdAt:
+          type: string
+          format: date-time
+          example: "2024-06-20T10:00:00.000Z"
+
+    # ─── USER REF (Thông tin user tóm tắt khi populate) ─────────────────────
+    UserRef:
+      type: object
+      description: Thông tin user được populate (chỉ các field cơ bản)
+      properties:
+        _id:
+          type: string
+          example: "64f1a2b3c4d5e6f7a8b9c0d5"
+        name:
+          type: string
+          example: "Trần Thị Bảo"
+        email:
+          type: string
+          example: "tranthibao@laundry.vn"
+          nullable: true
+        phone:
+          type: string
+          example: "0987654321"
+          nullable: true
+        role:
+          type: string
+          enum: [customer, staff, admin]
+          example: "staff"
+
+    # ─── SERVICE REF (Thông tin service tóm tắt khi populate) ───────────────
+    ServiceRef:
+      type: object
+      description: Thông tin service được populate
+      properties:
+        _id:
+          type: string
+          example: "64f1a2b3c4d5e6f7a8b9c0d2"
+        name:
+          type: string
+          example: "Giặt + Sấy thường"
+        priceType:
+          type: string
+          enum: [per_kg, per_item]
+          example: "per_kg"
+        price:
+          type: number
+          example: 25000
+        estimatedHours:
+          type: number
+          example: 24
+
+    # ─── ORDER ────────────────────────────────────────────────────────────────
+    Order:
+      type: object
+      description: Đơn hàng giặt ủi
+      properties:
+        _id:
+          type: string
+          example: "64f1a2b3c4d5e6f7a8b9c0d3"
+        orderCode:
+          type: string
+          example: "LD-20240620-0001"
+          description: Mã đơn hàng tự động sinh (format LD-YYYYMMDD-XXXX)
+        customer:
+          oneOf:
+            - $ref: '#/components/schemas/UserRef'
+            - type: string
+          description: Khách hàng (ObjectId hoặc object khi populate)
+        staff:
+          oneOf:
+            - $ref: '#/components/schemas/UserRef'
+            - type: string
+          description: Nhân viên được phân công (null nếu chưa assign)
+          nullable: true
+        service:
+          oneOf:
+            - $ref: '#/components/schemas/ServiceRef'
+            - type: string
+          description: Gói dịch vụ (ObjectId hoặc object khi populate)
+        quantity:
+          type: number
+          example: 3.5
+          description: Số lượng (kg nếu priceType=per_kg, hoặc số món nếu per_item)
+          minimum: 0.1
+        totalPrice:
+          type: number
+          example: 87500
+          description: Tổng tiền (VNĐ) = service.price × quantity, tính tự động
+        status:
+          type: string
+          enum: [received, washing, drying, delivering, completed, cancelled]
+          example: "received"
+          description: |
+            Trạng thái đơn hàng:
+            - `received` (📦 Đã nhận đơn): Đơn mới tạo, chờ nhân viên lấy
+            - `washing` (🫧 Đang giặt): Đang trong máy giặt
+            - `drying` (🌬️ Đang sấy/ủi): Đang sấy hoặc ủi
+            - `delivering` (🚚 Đang giao): Shipper đang trên đường giao
+            - `completed` (✅ Hoàn thành): Đã giao thành công
+            - `cancelled` (❌ Đã hủy): Đơn bị hủy
+        pickupAddress:
+          type: string
+          example: "123 Lê Lợi, Quận 1, TP.HCM"
+          description: Địa chỉ lấy đồ
+        deliveryAddress:
+          type: string
+          example: "456 Nguyễn Trãi, Quận 5, TP.HCM"
+          description: Địa chỉ giao đồ (có thể khác địa chỉ lấy)
+        scheduledPickupTime:
+          type: string
+          format: date-time
+          example: "2024-06-21T09:00:00.000Z"
+          description: Thời gian lấy đồ mong muốn của khách
+          nullable: true
+        note:
+          type: string
+          example: "Quần áo màu tối, giặt riêng. Tránh nhiệt độ cao."
+          description: Ghi chú của khách khi đặt đơn
+          nullable: true
+        staffNotes:
+          type: array
+          description: Danh sách ghi chú của nhân viên (có thể nhiều, theo thời gian)
+          items:
+            $ref: '#/components/schemas/StaffNote'
+        adminNote:
+          type: string
+          example: "VIP customer — ưu tiên xử lý"
+          description: Ghi chú riêng của Admin (1 ghi chú, ghi đè được)
+          nullable: true
+        statusHistory:
+          type: array
+          description: Lịch sử thay đổi trạng thái (audit trail)
+          items:
+            $ref: '#/components/schemas/StatusHistoryItem'
+        completedAt:
+          type: string
+          format: date-time
+          example: "2024-06-22T14:30:00.000Z"
+          description: Thời điểm hoàn thành (tự động set khi status = completed)
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+          example: "2024-06-20T08:00:00.000Z"
+        updatedAt:
+          type: string
+          format: date-time
+          example: "2024-06-21T10:00:00.000Z"
+
+    # ─── ORDER IMAGE ──────────────────────────────────────────────────────────
+    OrderImage:
+      type: object
+      description: Ảnh chụp đơn hàng (nhận đồ hoặc giao đồ)
+      properties:
+        _id:
+          type: string
+          example: "64f1a2b3c4d5e6f7a8b9c0d4"
+        order:
+          type: string
+          example: "64f1a2b3c4d5e6f7a8b9c0d3"
+          description: OrderId
+        imageUrl:
+          type: string
+          format: uri
+          example: "https://res.cloudinary.com/laundry/image/upload/v1720000000/orders/abc123.jpg"
+          description: URL ảnh (Cloudinary hoặc local URL)
+        imageType:
+          type: string
+          enum: [pickup, delivery]
+          example: "pickup"
+          description: |
+            Loại ảnh:
+            - `pickup`: Ảnh chụp khi nhận đồ từ khách
+            - `delivery`: Ảnh chụp khi giao đồ lại cho khách
+        uploadedBy:
+          $ref: '#/components/schemas/UserRef'
+        metadata:
+          type: object
+          properties:
+            originalName:
+              type: string
+              example: "IMG_20240620_090000.jpg"
+            mimetype:
+              type: string
+              example: "image/jpeg"
+            size:
+              type: number
+              example: 2048576
+              description: Kích thước file (bytes)
+        createdAt:
+          type: string
+          format: date-time
+          example: "2024-06-20T09:00:00.000Z"
+
+    # ─── PAYMENT ──────────────────────────────────────────────────────────────
+    Payment:
+      type: object
+      description: Giao dịch thanh toán
+      properties:
+        _id:
+          type: string
+          example: "64f1a2b3c4d5e6f7a8b9c0d6"
+        order:
+          type: string
+          example: "64f1a2b3c4d5e6f7a8b9c0d3"
+          description: OrderId
+        amount:
+          type: number
+          example: 87500
+          description: Số tiền thanh toán (VNĐ)
+        method:
+          type: string
+          enum: [cash, vnpay, momo]
+          example: "vnpay"
+          description: Phương thức thanh toán
+        status:
+          type: string
+          enum: [pending, paid, failed, refunded]
+          example: "pending"
+          description: |
+            Trạng thái giao dịch:
+            - `pending`: Chờ thanh toán
+            - `paid`: Đã thanh toán thành công
+            - `failed`: Thanh toán thất bại
+            - `refunded`: Đã hoàn tiền
+        transactionId:
+          type: string
+          example: "VNP20240620090000123456"
+          description: Mã giao dịch từ cổng thanh toán
+          nullable: true
+        paymentUrl:
+          type: string
+          format: uri
+          example: "https://sandbox.vnpayment.vn/paymentv2/vpcpay.html?vnp_Amount=8750000&..."
+          description: URL redirect để khách thanh toán (chỉ có với vnpay/momo)
+          nullable: true
+        paidAt:
+          type: string
+          format: date-time
+          example: "2024-06-20T09:05:00.000Z"
+          description: Thời điểm thanh toán thành công
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+          example: "2024-06-20T09:00:00.000Z"
+
+    # ─── DASHBOARD STATS ──────────────────────────────────────────────────────
+    DashboardStats:
+      type: object
+      description: Thống kê tổng quan cho trang Admin Dashboard
+      properties:
+        today:
+          type: object
+          description: Thống kê trong ngày hôm nay
+          properties:
+            totalOrders:
+              type: number
+              example: 15
+              description: Tổng số đơn tạo hôm nay
+            revenue:
+              type: number
+              example: 1250000
+              description: Doanh thu hôm nay (VNĐ, chỉ tính đơn completed)
+            pendingOrders:
+              type: number
+              example: 8
+              description: Số đơn chưa hoàn thành (received + washing + drying + delivering)
+        ordersByStatus:
+          type: object
+          description: Số lượng đơn theo từng trạng thái
+          properties:
+            received:
+              type: number
+              example: 5
+            washing:
+              type: number
+              example: 3
+            drying:
+              type: number
+              example: 2
+            delivering:
+              type: number
+              example: 4
+            completed:
+              type: number
+              example: 120
+            cancelled:
+              type: number
+              example: 8
+        monthlyRevenue:
+          type: array
+          description: Doanh thu theo từng tháng trong năm hiện tại
+          items:
+            type: object
+            properties:
+              month:
+                type: number
+                example: 6
+                description: Tháng (1-12)
+              year:
+                type: number
+                example: 2024
+              revenue:
+                type: number
+                example: 18500000
+                description: Doanh thu tháng đó (VNĐ)
+              totalOrders:
+                type: number
+                example: 95
+        recentOrders:
+          type: array
+          description: 10 đơn hàng gần nhất
+          items:
+            $ref: '#/components/schemas/Order'
+
+    # ─── PAGINATION ───────────────────────────────────────────────────────────
+    Pagination:
+      type: object
+      description: Thông tin phân trang
+      properties:
+        total:
+          type: number
+          example: 150
+          description: Tổng số bản ghi
+        page:
+          type: number
+          example: 1
+          description: Trang hiện tại
+        limit:
+          type: number
+          example: 20
+          description: Số bản ghi mỗi trang
+        totalPages:
+          type: number
+          example: 8
+          description: Tổng số trang
+
+    # ─── REQUEST BODIES ───────────────────────────────────────────────────────
+
+    RegisterRequest:
+      type: object
+      required: [name, email, password]
+      description: Body để đăng ký tài khoản (luồng email+password, dành cho admin/staff)
+      properties:
+        name:
+          type: string
+          example: "Nguyễn Văn An"
+          description: Họ và tên đầy đủ
+        email:
+          type: string
+          format: email
+          example: "nguyenvanan@gmail.com"
+        password:
+          type: string
+          format: password
+          minLength: 6
+          example: "matkhau123"
+        phone:
+          type: string
+          example: "0912345678"
+          description: SĐT (optional)
+          nullable: true
+        address:
+          type: string
+          example: "123 Lê Lợi, Quận 1, TP.HCM"
+          nullable: true
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      description: Body để đăng nhập bằng email + password
+      properties:
+        email:
+          type: string
+          format: email
+          example: "nguyenvanan@gmail.com"
+        password:
+          type: string
+          format: password
+          example: "matkhau123"
+
+    SendOtpRequest:
+      type: object
+      required: [phone]
+      description: Body để gửi mã OTP tới số điện thoại
+      properties:
+        phone:
+          type: string
+          example: "0912345678"
+          description: Số điện thoại VN (định dạng 10 số, bắt đầu bằng 0)
+
+    VerifyOtpRequest:
+      type: object
+      required: [phone, otp]
+      description: Body để xác thực mã OTP và lấy JWT token
+      properties:
+        phone:
+          type: string
+          example: "0912345678"
+        otp:
+          type: string
+          example: "123456"
+          minLength: 6
+          maxLength: 6
+          description: Mã OTP 6 chữ số nhận được qua SMS
+
+    UpdateProfileRequest:
+      type: object
+      description: Body để cập nhật thông tin cá nhân
+      properties:
+        name:
+          type: string
+          example: "Nguyễn Văn An (updated)"
+        phone:
+          type: string
+          example: "0987654321"
+        address:
+          type: string
+          example: "456 Nguyễn Trãi, Quận 5, TP.HCM"
+
+    CreateOrderRequest:
+      type: object
+      required: [serviceId, quantity, pickupAddress, deliveryAddress]
+      description: Body để tạo đơn hàng mới
+      properties:
+        serviceId:
+          type: string
+          example: "64f1a2b3c4d5e6f7a8b9c0d2"
+          description: ID của gói dịch vụ (lấy từ GET /services)
+        quantity:
+          type: number
+          example: 3.5
+          minimum: 0.1
+          description: Số lượng kg (nếu priceType=per_kg) hoặc số món (nếu per_item)
+        pickupAddress:
+          type: string
+          example: "123 Lê Lợi, Quận 1, TP.HCM"
+          description: Địa chỉ nhân viên đến lấy đồ
+        deliveryAddress:
+          type: string
+          example: "456 Nguyễn Trãi, Quận 5, TP.HCM"
+          description: Địa chỉ giao đồ lại (có thể giống hoặc khác pickupAddress)
+        scheduledPickupTime:
+          type: string
+          format: date-time
+          example: "2024-06-21T09:00:00.000Z"
+          description: Thời gian lấy đồ mong muốn (optional, mặc định sớm nhất có thể)
+          nullable: true
+        note:
+          type: string
+          example: "Quần áo màu tối, giặt riêng. Không giặt với đồ trắng."
+          description: Ghi chú đặc biệt cho đơn hàng
+          nullable: true
+
+    UpdateOrderStatusRequest:
+      type: object
+      required: [status]
+      description: Body để cập nhật trạng thái đơn hàng (dùng cho cả Admin và Staff routes)
+      properties:
+        status:
+          type: string
+          enum: [received, washing, drying, delivering, completed, cancelled]
+          example: "washing"
+          description: |
+            Trạng thái mới. Phải tuân theo luồng hợp lệ:
+            - received → washing | cancelled
+            - washing → drying | cancelled
+            - drying → delivering | cancelled
+            - delivering → completed | cancelled
+            - completed → (không thể chuyển)
+            - cancelled → (không thể phục hồi)
+        note:
+          type: string
+          example: "Bắt đầu giặt lúc 9h sáng"
+          description: Ghi chú kèm theo khi chuyển trạng thái (optional)
+          nullable: true
+
+    CreateServiceRequest:
+      type: object
+      required: [name, priceType, price]
+      description: Body để tạo gói dịch vụ mới
+      properties:
+        name:
+          type: string
+          example: "Giặt khô cao cấp"
+          description: Tên dịch vụ (phải là duy nhất trong hệ thống)
+        description:
+          type: string
+          example: "Giặt khô chuyên nghiệp, phù hợp vest, áo khoác da, đầm dạ hội"
+          nullable: true
+        priceType:
+          type: string
+          enum: [per_kg, per_item]
+          example: "per_item"
+        price:
+          type: number
+          example: 150000
+          minimum: 0
+          description: Đơn giá (VNĐ)
+        estimatedHours:
+          type: number
+          example: 48
+          minimum: 1
+          description: Thời gian xử lý ước tính (giờ, mặc định 24)
+
+    UpdateServiceRequest:
+      type: object
+      description: Body để cập nhật gói dịch vụ (chỉ truyền các field cần thay đổi)
+      properties:
+        name:
+          type: string
+          example: "Giặt khô cao cấp (updated)"
+        description:
+          type: string
+          nullable: true
+        priceType:
+          type: string
+          enum: [per_kg, per_item]
+        price:
+          type: number
+          minimum: 0
+        estimatedHours:
+          type: number
+          minimum: 1
+        isActive:
+          type: boolean
+          example: false
+          description: Đặt false để tạm ngừng cung cấp dịch vụ
+
+    CreatePaymentRequest:
+      type: object
+      required: [orderId, method]
+      description: Body để tạo giao dịch thanh toán
+      properties:
+        orderId:
+          type: string
+          example: "64f1a2b3c4d5e6f7a8b9c0d3"
+          description: ID đơn hàng cần thanh toán
+        method:
+          type: string
+          enum: [cash, vnpay, momo]
+          example: "vnpay"
+          description: Phương thức thanh toán
+
+    AddStaffNoteRequest:
+      type: object
+      required: [content]
+      description: Body để thêm ghi chú nhân viên
+      properties:
+        content:
+          type: string
+          example: "Áo sơ mi bị ố vàng nhẹ, đã dùng tẩy chuyên dụng"
+          maxLength: 500
+
+    UpdateAdminNoteRequest:
+      type: object
+      required: [adminNote]
+      description: Body để cập nhật ghi chú admin (overwrite)
+      properties:
+        adminNote:
+          type: string
+          example: "VIP customer — ưu tiên xử lý"
+          description: Ghi chú mới (truyền chuỗi rỗng "" để xóa ghi chú)
+          maxLength: 300
+
+    AssignStaffRequest:
+      type: object
+      required: [staffId]
+      description: Body để phân công nhân viên cho đơn hàng
+      properties:
+        staffId:
+          type: string
+          example: "64f1a2b3c4d5e6f7a8b9c0d5"
+          description: ID của nhân viên (role = staff)
+
+    # ─── RESPONSE WRAPPERS ─────────────────────────────────────────────────────
+
+    AuthLoginResponse:
+      type: object
+      description: Response thành công khi đăng nhập / xác thực OTP
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Đăng nhập thành công"
+        data:
+          type: object
+          properties:
+            accessToken:
+              type: string
+              example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI2NGYxYTJiM2M0ZDVlNmY3YThiOWMwZDEiLCJyb2xlIjoiY3VzdG9tZXIiLCJpYXQiOjE3MTkwMDAwMDAsImV4cCI6MTcxOTAwMTgwMH0.XXXX"
+              description: JWT Access Token (hết hạn sau 30 phút). Lưu vào memory/state, KHÔNG lưu localStorage
+            user:
+              $ref: '#/components/schemas/User'
+
+    AuthRegisterResponse:
+      type: object
+      description: Response thành công khi đăng ký (tự động đăng nhập luôn)
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Đăng ký thành công"
+        data:
+          type: object
+          properties:
+            accessToken:
+              type: string
+              example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+            user:
+              $ref: '#/components/schemas/User'
+
+    VerifyOtpResponse:
+      type: object
+      description: Response sau khi xác thực OTP thành công
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Đăng nhập thành công!"
+        data:
+          type: object
+          properties:
+            accessToken:
+              type: string
+              example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+            user:
+              $ref: '#/components/schemas/User'
+            isNewUser:
+              type: boolean
+              example: false
+              description: true nếu đây là lần đăng ký đầu tiên, false nếu đăng nhập lại
+
+    ServiceListResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Lấy danh sách dịch vụ thành công"
+        data:
+          type: object
+          properties:
+            services:
+              type: array
+              items:
+                $ref: '#/components/schemas/Service'
+
+    ServiceDetailResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Lấy chi tiết dịch vụ thành công"
+        data:
+          type: object
+          properties:
+            service:
+              $ref: '#/components/schemas/Service'
+
+    OrderDetailResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Lấy chi tiết đơn hàng thành công"
+        data:
+          type: object
+          properties:
+            order:
+              $ref: '#/components/schemas/Order'
+            images:
+              type: array
+              items:
+                $ref: '#/components/schemas/OrderImage'
+
+    OrderListResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Lấy danh sách đơn hàng thành công"
+        data:
+          type: object
+          properties:
+            orders:
+              type: array
+              items:
+                $ref: '#/components/schemas/Order'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    DashboardResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Lấy thống kê dashboard thành công"
+        data:
+          $ref: '#/components/schemas/DashboardStats'
+
+    # ─── ERROR RESPONSES ───────────────────────────────────────────────────────
+
+    ErrorResponse:
+      type: object
+      description: Cấu trúc lỗi chung
+      properties:
+        success:
+          type: boolean
+          example: false
+        message:
+          type: string
+          example: "Mô tả lỗi cụ thể"
+        data:
+          nullable: true
+          example: null
+
+    ValidationErrorResponse:
+      type: object
+      description: Lỗi validation (400) — khi dữ liệu đầu vào không hợp lệ
+      properties:
+        success:
+          type: boolean
+          example: false
+        message:
+          type: string
+          example: "Dữ liệu không hợp lệ"
+        errors:
+          type: array
+          items:
+            type: string
+          example: ["Tên dịch vụ không được để trống", "Giá tiền không được âm"]
+        data:
+          nullable: true
+          example: null
+
+  # ─── REUSABLE PARAMETERS ──────────────────────────────────────────────────
+  parameters:
+    IdParam:
+      name: id
+      in: path
+      required: true
+      description: MongoDB ObjectId của bản ghi
+      schema:
+        type: string
+        example: "64f1a2b3c4d5e6f7a8b9c0d3"
+
+    PageParam:
+      name: page
+      in: query
+      description: Số trang (bắt đầu từ 1)
+      schema:
+        type: integer
+        default: 1
+        minimum: 1
+
+    LimitParam:
+      name: limit
+      in: query
+      description: Số bản ghi mỗi trang
+      schema:
+        type: integer
+        default: 20
+        minimum: 1
+        maximum: 100
+
+  # ─── REUSABLE RESPONSES ───────────────────────────────────────────────────
+  responses:
+    Unauthorized:
+      description: Token không hợp lệ hoặc chưa đăng nhập
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            message: "Bạn chưa đăng nhập. Vui lòng đăng nhập để tiếp tục."
+            data: null
+
+    Forbidden:
+      description: Không có quyền truy cập
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            message: "Bạn không có quyền thực hiện hành động này."
+            data: null
+
+    NotFound:
+      description: Không tìm thấy bản ghi
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            message: "Không tìm thấy bản ghi"
+            data: null
+
+    BadRequest:
+      description: Dữ liệu đầu vào không hợp lệ
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ValidationErrorResponse'
+
+    InternalServerError:
+      description: Lỗi server nội bộ
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            message: "Lỗi server nội bộ"
+            data: null
+
+# ─── GLOBAL SECURITY ────────────────────────────────────────────────────────
+# Áp dụng BearerAuth cho toàn bộ API.
+# Các endpoint PUBLIC (không cần token) sẽ ghi đè bằng security: []
+security:
+  - BearerAuth: []
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  TAGS — Nhóm các endpoint
+# ═══════════════════════════════════════════════════════════════════════════════
+tags:
+  - name: Auth
+    description: |
+      Xác thực & quản lý tài khoản.
+      Hỗ trợ 2 luồng: Email+Password và SĐT+OTP.
+  - name: Services
+    description: |
+      Danh sách các gói dịch vụ giặt ủi.
+      Public endpoints: ai cũng xem được.
+  - name: Orders
+    description: |
+      Đặt đơn và theo dõi lịch sử đơn hàng của khách hàng.
+      Yêu cầu đăng nhập.
+  - name: Payments
+    description: |
+      Tạo và tra cứu giao dịch thanh toán (cash, VNPay, MoMo).
+      Yêu cầu đăng nhập.
+  - name: Admin — Dashboard & Orders
+    description: |
+      **[Yêu cầu role: admin hoặc staff]**
+      Quản lý đơn hàng, xem thống kê dashboard.
+  - name: Admin — Staff Management
+    description: |
+      **[Yêu cầu role: admin only]**
+      Phân công nhân viên, xem danh sách staff.
+  - name: Admin — Services Management
+    description: |
+      **[Yêu cầu role: admin only]**
+      Thêm, sửa, xóa các gói dịch vụ.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  PATHS — Danh sách tất cả Endpoints
+# ═══════════════════════════════════════════════════════════════════════════════
+paths:
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  #  AUTH ENDPOINTS  (Base: /api/auth)
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Đăng ký tài khoản mới (Email + Password)
+      description: |
+        Tạo tài khoản mới bằng email và password. Sau khi đăng ký thành công,
+        server tự động đăng nhập và trả về `accessToken` ngay (không cần gọi thêm login).
+
+        **Refresh Token** được set tự động vào HttpOnly Cookie.
+
+        > ⚠️ Role mặc định sau khi đăng ký là `customer`.
+        > Admin/Staff cần được tạo thủ công hoặc qua seed script.
+      operationId: register
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+            example:
+              name: "Nguyễn Văn An"
+              email: "nguyenvanan@gmail.com"
+              password: "matkhau123"
+              phone: "0912345678"
+              address: "123 Lê Lợi, Quận 1, TP.HCM"
+      responses:
+        '201':
+          description: Đăng ký thành công
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthRegisterResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Đăng nhập bằng Email + Password
+      description: |
+        Đăng nhập bằng email và mật khẩu. Dùng cho Admin và Staff.
+
+        **Response trả về:**
+        - `accessToken`: JWT token (hết hạn sau 30 phút). FE lưu vào memory/state.
+        - `user`: Thông tin cơ bản của người dùng.
+
+        **Refresh Token** được set tự động vào HttpOnly Cookie (hết hạn 7 ngày).
+        Khi access token hết hạn, gọi `POST /auth/refresh-token`.
+      operationId: login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            example:
+              email: "admin@laundry.vn"
+              password: "admin123"
+      responses:
+        '200':
+          description: Đăng nhập thành công
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthLoginResponse'
+        '400':
+          description: Thiếu email hoặc password
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Email hoặc mật khẩu không đúng
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                message: "Email hoặc mật khẩu không chính xác"
+                data: null
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /auth/send-otp:
+    post:
+      tags: [Auth]
+      summary: Gửi mã OTP tới số điện thoại (Bước 1 — Luồng OTP)
+      description: |
+        Bước 1 trong luồng đăng nhập bằng SĐT+OTP dành cho Customer.
+
+        - Nếu SĐT chưa tồn tại trong hệ thống → OTP dùng để đăng ký tài khoản mới
+        - Nếu SĐT đã tồn tại → OTP dùng để đăng nhập
+
+        **Rate limit:** Tối đa 5 lần/15 phút/IP
+
+        **OTP hết hạn sau:** 5 phút
+      operationId: sendOtp
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendOtpRequest'
+            example:
+              phone: "0912345678"
+      responses:
+        '200':
+          description: Gửi OTP thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Đã gửi mã OTP tới số 0912345678"
+                  data:
+                    type: object
+                    properties:
+                      expiresInMinutes:
+                        type: number
+                        example: 5
+                        description: OTP hết hạn sau bao nhiêu phút
+        '400':
+          description: Thiếu số điện thoại hoặc định dạng không đúng
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          description: Vượt quá rate limit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                message: "Quá nhiều yêu cầu. Vui lòng thử lại sau 15 phút."
+                data: null
+
+  /auth/verify-otp:
+    post:
+      tags: [Auth]
+      summary: Xác thực mã OTP và lấy JWT Token (Bước 2 — Luồng OTP)
+      description: |
+        Bước 2 trong luồng đăng nhập bằng SĐT+OTP.
+
+        - Nếu là user mới → tự động tạo tài khoản và đăng nhập, trả về `isNewUser: true`
+        - Nếu là user cũ → đăng nhập, trả về `isNewUser: false`
+
+        **Rate limit:** Tối đa 10 lần/15 phút/IP
+
+        **Refresh Token** được set tự động vào HttpOnly Cookie.
+      operationId: verifyOtp
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyOtpRequest'
+            example:
+              phone: "0912345678"
+              otp: "123456"
+      responses:
+        '200':
+          description: Đăng nhập thành công (user cũ)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerifyOtpResponse'
+        '201':
+          description: Đăng ký thành công (user mới)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerifyOtpResponse'
+              example:
+                success: true
+                message: "Đăng ký thành công! Chào mừng bạn đến với LaundryApp."
+                data:
+                  accessToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                  user:
+                    _id: "64f1a2b3c4d5e6f7a8b9c0d1"
+                    name: ""
+                    phone: "0912345678"
+                    role: "customer"
+                    isPhoneVerified: true
+                    isActive: true
+                  isNewUser: true
+        '400':
+          description: OTP không đúng hoặc đã hết hạn
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                message: "Mã OTP không hợp lệ hoặc đã hết hạn"
+                data: null
+        '429':
+          description: Vượt quá rate limit
+
+  /auth/refresh-token:
+    post:
+      tags: [Auth]
+      summary: Cấp lại Access Token mới bằng Refresh Token
+      description: |
+        FE gọi endpoint này khi nhận được lỗi `401 Unauthorized` (access token hết hạn).
+
+        **Cơ chế hoạt động:**
+        - `refreshToken` được gửi tự động qua HttpOnly Cookie (browser tự xử lý)
+        - Server xác thực cookie và cấp lại `accessToken` mới
+
+        > ⚠️ Không cần truyền gì trong body. Cookie được gửi tự động.
+      operationId: refreshToken
+      security: []
+      responses:
+        '200':
+          description: Cấp lại token thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Cấp lại access token thành công"
+                  data:
+                    type: object
+                    properties:
+                      accessToken:
+                        type: string
+                        example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                      user:
+                        $ref: '#/components/schemas/User'
+        '401':
+          description: Refresh token không hợp lệ hoặc đã hết hạn — yêu cầu đăng nhập lại
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Đăng xuất
+      description: |
+        Xóa Refresh Token khỏi HttpOnly Cookie.
+        FE cần tự xóa `accessToken` khỏi memory/state sau khi gọi endpoint này.
+      operationId: logout
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Đăng xuất thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Đăng xuất thành công"
+                  data:
+                    nullable: true
+                    example: null
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Lấy thông tin tài khoản đang đăng nhập
+      description: |
+        Trả về đầy đủ thông tin của user đang đăng nhập (dựa vào JWT token trong header).
+        Tương đương với `GET /users/profile`.
+      operationId: getMe
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Lấy thông tin thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Lấy thông tin thành công"
+                  data:
+                    type: object
+                    properties:
+                      user:
+                        $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    put:
+      tags: [Auth]
+      summary: Cập nhật thông tin cá nhân
+      description: |
+        Cập nhật thông tin cá nhân của user đang đăng nhập.
+        Chỉ cần truyền các field muốn thay đổi.
+      operationId: updateProfile
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProfileRequest'
+            example:
+              name: "Nguyễn Văn An"
+              address: "789 Trần Hưng Đạo, Quận 1, TP.HCM"
+      responses:
+        '200':
+          description: Cập nhật thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Cập nhật thành công"
+                  data:
+                    type: object
+                    properties:
+                      user:
+                        $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  #  SERVICES ENDPOINTS  (Base: /api/services)
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  /services:
+    get:
+      tags: [Services]
+      summary: Lấy danh sách tất cả gói dịch vụ giặt ủi
+      description: |
+        Trả về danh sách các gói dịch vụ đang hoạt động.
+        **Endpoint public — không cần token.**
+
+        Ví dụ các gói dịch vụ:
+        - Giặt + Sấy thường (25.000đ/kg)
+        - Giặt khô áo vest (150.000đ/món)
+        - Combo 5kg (110.000đ/combo)
+      operationId: getAllServices
+      security: []
+      responses:
+        '200':
+          description: Lấy danh sách thành công
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceListResponse'
+              example:
+                success: true
+                message: "Lấy danh sách dịch vụ thành công"
+                data:
+                  services:
+                    - _id: "64f1a2b3c4d5e6f7a8b9c0d2"
+                      name: "Giặt + Sấy thường"
+                      description: "Giặt máy kết hợp sấy khô, phù hợp quần áo hàng ngày"
+                      priceType: "per_kg"
+                      price: 25000
+                      estimatedHours: 24
+                      isActive: true
+                    - _id: "64f1a2b3c4d5e6f7a8b9c0e1"
+                      name: "Giặt khô cao cấp"
+                      description: "Phù hợp vest, áo khoác, đầm dạ hội"
+                      priceType: "per_item"
+                      price: 150000
+                      estimatedHours: 48
+                      isActive: true
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    post:
+      tags: [Admin — Services Management]
+      summary: "[Admin] Tạo gói dịch vụ mới"
+      description: |
+        **[Yêu cầu role: admin]**
+
+        Tạo một gói dịch vụ giặt ủi mới.
+        Tên dịch vụ phải là duy nhất trong hệ thống.
+      operationId: createService
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateServiceRequest'
+            example:
+              name: "Giặt + Ủi phẳng"
+              description: "Giặt máy và ủi phẳng từng món, giao hàng trong 36h"
+              priceType: "per_kg"
+              price: 35000
+              estimatedHours: 36
+      responses:
+        '201':
+          description: Tạo dịch vụ thành công
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceDetailResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /services/{id}:
+    get:
+      tags: [Services]
+      summary: Lấy chi tiết một gói dịch vụ
+      description: |
+        Lấy thông tin chi tiết của một gói dịch vụ theo ID.
+        **Endpoint public — không cần token.**
+      operationId: getServiceById
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '200':
+          description: Lấy chi tiết thành công
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceDetailResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      tags: [Admin — Services Management]
+      summary: "[Admin] Cập nhật gói dịch vụ"
+      description: |
+        **[Yêu cầu role: admin]**
+
+        Cập nhật thông tin gói dịch vụ. Chỉ truyền các field muốn thay đổi.
+        Có thể dùng để tắt dịch vụ bằng cách đặt `isActive: false`.
+      operationId: updateService
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateServiceRequest'
+            example:
+              price: 28000
+              isActive: true
+      responses:
+        '200':
+          description: Cập nhật thành công
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceDetailResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [Admin — Services Management]
+      summary: "[Admin] Xóa gói dịch vụ"
+      description: |
+        **[Yêu cầu role: admin]**
+
+        Xóa vĩnh viễn gói dịch vụ khỏi hệ thống.
+
+        > ⚠️ **Lưu ý:** Nên cân nhắc dùng `PUT /services/{id}` với `isActive: false`
+        > thay vì xóa hẳn, để không ảnh hưởng đến lịch sử đơn hàng đã có.
+      operationId: deleteService
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '200':
+          description: Xóa thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Xóa dịch vụ thành công"
+                  data:
+                    nullable: true
+                    example: null
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  #  ORDERS ENDPOINTS  (Base: /api/orders)
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  /orders:
+    get:
+      tags: [Orders]
+      summary: Lấy danh sách đơn hàng (phân quyền theo role)
+      description: |
+        **Phân quyền theo role:**
+        - **Customer:** Chỉ thấy đơn hàng của chính mình
+        - **Staff & Admin:** Thấy tất cả đơn hàng, có thể lọc theo status
+
+        Kết quả được phân trang và sắp xếp theo thời gian tạo (mới nhất trước).
+      operationId: getAllOrders
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          description: Lọc theo trạng thái đơn hàng
+          schema:
+            type: string
+            enum: [received, washing, drying, delivering, completed, cancelled]
+        - $ref: '#/components/parameters/PageParam'
+        - name: limit
+          in: query
+          description: Số bản ghi mỗi trang
+          schema:
+            type: integer
+            default: 10
+      responses:
+        '200':
+          description: Lấy danh sách thành công
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    post:
+      tags: [Orders]
+      summary: Tạo đơn hàng mới
+      description: |
+        **[Yêu cầu đăng nhập — Customer]**
+
+        Tạo đơn hàng giặt ủi mới. Tổng tiền được tính tự động:
+        ```
+        totalPrice = service.price × quantity
+        ```
+
+        Sau khi tạo thành công:
+        - Đơn hàng có trạng thái ban đầu là `received`
+        - Mã đơn hàng được tự động sinh (format: `LD-YYYYMMDD-XXXX`)
+        - Staff dashboard nhận thông báo real-time qua Socket.io
+      operationId: createOrder
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOrderRequest'
+            example:
+              serviceId: "64f1a2b3c4d5e6f7a8b9c0d2"
+              quantity: 3.5
+              pickupAddress: "123 Lê Lợi, Quận 1, TP.HCM"
+              deliveryAddress: "456 Nguyễn Trãi, Quận 5, TP.HCM"
+              scheduledPickupTime: "2024-06-21T09:00:00.000Z"
+              note: "Quần áo màu tối, giặt riêng. Tránh nhiệt cao."
+      responses:
+        '201':
+          description: Tạo đơn hàng thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Tạo đơn hàng thành công"
+                  data:
+                    type: object
+                    properties:
+                      order:
+                        $ref: '#/components/schemas/Order'
+        '400':
+          description: Dữ liệu không hợp lệ hoặc dịch vụ không tồn tại/đã ngừng hoạt động
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /orders/{id}:
+    get:
+      tags: [Orders]
+      summary: Lấy chi tiết một đơn hàng (kèm ảnh)
+      description: |
+        Trả về đầy đủ thông tin đơn hàng bao gồm:
+        - Thông tin đơn hàng (populate customer, staff, service)
+        - Lịch sử trạng thái (statusHistory)
+        - Ghi chú nhân viên (staffNotes)
+        - Danh sách ảnh nhận/giao đồ (images)
+
+        **Phân quyền:**
+        - Customer chỉ xem được đơn của mình
+        - Staff/Admin xem được tất cả
+      operationId: getOrderById
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '200':
+          description: Lấy chi tiết thành công
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderDetailResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Customer cố xem đơn hàng của người khác
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [Orders]
+      summary: Hủy đơn hàng
+      description: |
+        **Phân quyền hủy đơn:**
+        - **Customer:** Chỉ hủy được đơn của mình và khi `status = received`
+        - **Admin:** Hủy bất kỳ đơn nào (trừ đơn đã `completed`)
+
+        Khi hủy, `statusHistory` sẽ được cập nhật với lý do hủy.
+      operationId: cancelOrder
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+        - name: reason
+          in: query
+          description: Lý do hủy đơn (optional)
+          schema:
+            type: string
+            example: "Khách hàng đổi ý"
+      responses:
+        '200':
+          description: Hủy đơn thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Hủy đơn hàng thành công"
+                  data:
+                    type: object
+                    properties:
+                      order:
+                        $ref: '#/components/schemas/Order'
+        '400':
+          description: Không thể hủy (đơn đã completed hoặc đã cancelled)
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /orders/{id}/status:
+    put:
+      tags: [Orders]
+      summary: "[Staff/Admin] Cập nhật trạng thái đơn hàng"
+      description: |
+        **[Yêu cầu role: staff hoặc admin]**
+
+        Cập nhật trạng thái đơn hàng theo đúng luồng:
+        ```
+        received → washing → drying → delivering → completed
+        ```
+        Bất kỳ trạng thái nào cũng có thể chuyển sang `cancelled` (trừ `completed`).
+
+        > ⚠️ Nếu chuyển sang trạng thái không hợp lệ, server trả về lỗi 400 với
+        > danh sách trạng thái hợp lệ tiếp theo.
+      operationId: updateOrderStatus
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateOrderStatusRequest'
+            example:
+              status: "washing"
+              note: "Bắt đầu giặt lúc 9h sáng, máy giặt số 3"
+      responses:
+        '200':
+          description: Cập nhật trạng thái thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Cập nhật trạng thái đơn hàng thành công → \"washing\""
+                  data:
+                    type: object
+                    properties:
+                      order:
+                        $ref: '#/components/schemas/Order'
+        '400':
+          description: Trạng thái không hợp lệ hoặc vi phạm luồng trạng thái
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                message: "Không thể chuyển từ trạng thái \"completed\" sang \"washing\". Các trạng thái hợp lệ tiếp theo: không có"
+                data: null
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /orders/{id}/images:
+    post:
+      tags: [Orders]
+      summary: "[Staff/Admin] Upload ảnh nhận/giao đồ"
+      description: |
+        **[Yêu cầu role: staff hoặc admin]**
+
+        Upload ảnh chụp tại thời điểm nhận đồ từ khách (`pickup`) hoặc giao đồ lại (`delivery`).
+
+        **Ràng buộc trạng thái:**
+        - `imageType = pickup` → đơn phải ở trạng thái `received`
+        - `imageType = delivery` → đơn phải ở trạng thái `delivering`
+
+        Ảnh được upload lên Cloudinary. Hỗ trợ upload nhiều ảnh cùng lúc (tối đa 5 ảnh).
+      operationId: uploadOrderImages
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [images, imageType]
+              properties:
+                images:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+                  description: Các file ảnh (jpg, png, webp). Tối đa 5 ảnh, mỗi ảnh tối đa 10MB
+                imageType:
+                  type: string
+                  enum: [pickup, delivery]
+                  description: Loại ảnh
+      responses:
+        '201':
+          description: Upload ảnh thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Upload ảnh thành công"
+                  data:
+                    type: object
+                    properties:
+                      images:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/OrderImage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /orders/{id}/assign:
+    put:
+      tags: [Admin — Staff Management]
+      summary: "[Admin] Phân công nhân viên cho đơn hàng"
+      description: |
+        **[Yêu cầu role: admin]**
+
+        Gán một nhân viên (staff) cho đơn hàng.
+        Dùng để điều phối công việc trong nội bộ.
+      operationId: assignStaff
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssignStaffRequest'
+            example:
+              staffId: "64f1a2b3c4d5e6f7a8b9c0d5"
+      responses:
+        '200':
+          description: Phân công thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Phân công nhân viên thành công"
+                  data:
+                    type: object
+                    properties:
+                      order:
+                        $ref: '#/components/schemas/Order'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  #  PAYMENTS ENDPOINTS  (Base: /api/payments)
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  /payments/create:
+    post:
+      tags: [Payments]
+      summary: Tạo giao dịch thanh toán
+      description: |
+        Tạo giao dịch thanh toán cho đơn hàng.
+
+        **Các phương thức hỗ trợ:**
+        - `cash`: Thanh toán tiền mặt khi giao đồ. Response không có `paymentUrl`.
+        - `vnpay`: Thanh toán online qua VNPay. Response có `paymentUrl` → FE redirect khách tới URL đó.
+        - `momo`: Thanh toán qua MoMo. Response có `paymentUrl`.
+
+        **Luồng VNPay:**
+        1. FE gọi `POST /payments/create` với `method: "vnpay"`
+        2. Server tạo Payment record và trả về `paymentUrl`
+        3. FE redirect khách đến `paymentUrl`
+        4. VNPay callback về `GET /payments/vnpay-return` (server xử lý tự động)
+        5. FE poll `GET /payments/order/{orderId}` để kiểm tra kết quả
+      operationId: createPayment
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePaymentRequest'
+            example:
+              orderId: "64f1a2b3c4d5e6f7a8b9c0d3"
+              method: "vnpay"
+      responses:
+        '201':
+          description: Tạo giao dịch thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Tạo giao dịch thanh toán thành công"
+                  data:
+                    type: object
+                    properties:
+                      payment:
+                        $ref: '#/components/schemas/Payment'
+              examples:
+                vnpay:
+                  summary: Thanh toán VNPay
+                  value:
+                    success: true
+                    message: "Tạo giao dịch thanh toán thành công"
+                    data:
+                      payment:
+                        _id: "64f1a2b3c4d5e6f7a8b9c0d6"
+                        order: "64f1a2b3c4d5e6f7a8b9c0d3"
+                        amount: 87500
+                        method: "vnpay"
+                        status: "pending"
+                        paymentUrl: "https://sandbox.vnpayment.vn/paymentv2/vpcpay.html?vnp_Amount=8750000&vnp_TxnRef=LD-20240620-0001&..."
+                        paidAt: null
+                cash:
+                  summary: Thanh toán tiền mặt
+                  value:
+                    success: true
+                    message: "Tạo giao dịch thanh toán thành công"
+                    data:
+                      payment:
+                        _id: "64f1a2b3c4d5e6f7a8b9c0d7"
+                        order: "64f1a2b3c4d5e6f7a8b9c0d3"
+                        amount: 87500
+                        method: "cash"
+                        status: "pending"
+                        paymentUrl: null
+                        paidAt: null
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /payments/order/{orderId}:
+    get:
+      tags: [Payments]
+      summary: Lấy thông tin thanh toán theo đơn hàng
+      description: |
+        Lấy chi tiết giao dịch thanh toán liên kết với một đơn hàng.
+        FE dùng endpoint này để kiểm tra kết quả sau khi khách hoàn tất thanh toán VNPay/MoMo.
+      operationId: getPaymentByOrder
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          description: ID của đơn hàng
+          schema:
+            type: string
+            example: "64f1a2b3c4d5e6f7a8b9c0d3"
+      responses:
+        '200':
+          description: Lấy thông tin thanh toán thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Lấy thông tin thanh toán thành công"
+                  data:
+                    type: object
+                    properties:
+                      payment:
+                        $ref: '#/components/schemas/Payment'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /payments/vnpay-return:
+    get:
+      tags: [Payments]
+      summary: VNPay Callback URL (Server tự xử lý — FE không gọi trực tiếp)
+      description: |
+        Endpoint callback từ VNPay sau khi khách hoàn tất thanh toán.
+
+        > 🤖 **FE không cần gọi endpoint này.** VNPay server tự redirect về đây.
+        > Sau khi server xử lý xong, trang sẽ redirect về FE thành công/thất bại.
+
+        **Không yêu cầu JWT** vì VNPay gọi từ server của họ.
+      operationId: vnpayReturn
+      security: []
+      parameters:
+        - name: vnp_ResponseCode
+          in: query
+          schema:
+            type: string
+          description: Mã kết quả từ VNPay ("00" = thành công)
+        - name: vnp_TxnRef
+          in: query
+          schema:
+            type: string
+          description: Mã đơn hàng (orderCode)
+        - name: vnp_Amount
+          in: query
+          schema:
+            type: string
+          description: Số tiền thanh toán (×100)
+      responses:
+        '302':
+          description: Redirect về trang FE (thành công hoặc thất bại)
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  #  ADMIN ENDPOINTS  (Base: /api/admin)
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  /admin/dashboard:
+    get:
+      tags: [Admin — Dashboard & Orders]
+      summary: "[Admin/Staff] Xem thống kê Dashboard"
+      description: |
+        **[Yêu cầu role: admin hoặc staff]**
+
+        Trả về thống kê tổng quan cho trang Admin Dashboard:
+        - Số đơn và doanh thu trong ngày hôm nay
+        - Số đơn theo từng trạng thái
+        - Doanh thu theo từng tháng trong năm
+        - 10 đơn hàng gần nhất
+      operationId: getDashboard
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Lấy thống kê thành công
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /admin/orders:
+    get:
+      tags: [Admin — Dashboard & Orders]
+      summary: "[Admin/Staff] Xem và lọc tất cả đơn hàng"
+      description: |
+        **[Yêu cầu role: admin hoặc staff]**
+
+        Lấy danh sách toàn bộ đơn hàng trong hệ thống với bộ lọc nâng cao.
+
+        **Hỗ trợ lọc theo:**
+        - `status`: Trạng thái (có thể nhiều giá trị cách dấu phẩy: `?status=washing,drying`)
+        - `dateFrom` / `dateTo`: Khoảng thời gian tạo đơn
+        - `search`: Tìm theo mã đơn hàng (orderCode), vd: `?search=LD-20240620`
+        - `staffId`: Lọc theo nhân viên phụ trách
+        - `page`, `limit`, `sortBy`, `sortOrder`: Phân trang và sắp xếp
+      operationId: adminGetAllOrders
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          description: "Lọc theo trạng thái. Có thể truyền nhiều giá trị: ?status=washing,drying"
+          schema:
+            type: string
+            example: "washing"
+        - name: dateFrom
+          in: query
+          description: Lọc đơn từ ngày (ISO date, ví dụ 2024-06-01)
+          schema:
+            type: string
+            format: date
+            example: "2024-06-01"
+        - name: dateTo
+          in: query
+          description: Lọc đơn đến ngày (ISO date)
+          schema:
+            type: string
+            format: date
+            example: "2024-06-30"
+        - name: search
+          in: query
+          description: Tìm kiếm theo mã đơn hàng (orderCode)
+          schema:
+            type: string
+            example: "LD-20240620"
+        - name: staffId
+          in: query
+          description: Lọc theo ID nhân viên phụ trách
+          schema:
+            type: string
+            example: "64f1a2b3c4d5e6f7a8b9c0d5"
+        - name: sortBy
+          in: query
+          description: Field dùng để sắp xếp
+          schema:
+            type: string
+            enum: [createdAt, totalPrice, status]
+            default: createdAt
+        - name: sortOrder
+          in: query
+          description: Chiều sắp xếp
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+        - $ref: '#/components/parameters/PageParam'
+        - name: limit
+          in: query
+          description: Số bản ghi mỗi trang
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Lấy danh sách đơn hàng thành công
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /admin/orders/{id}:
+    get:
+      tags: [Admin — Dashboard & Orders]
+      summary: "[Admin/Staff] Xem chi tiết đơn hàng (đầy đủ)"
+      description: |
+        **[Yêu cầu role: admin hoặc staff]**
+
+        Trả về toàn bộ thông tin đơn hàng bao gồm:
+        - Thông tin khách hàng đầy đủ (tên, email, SĐT, địa chỉ)
+        - Thông tin nhân viên phụ trách
+        - Lịch sử trạng thái (statusHistory) đầy đủ
+        - Tất cả ghi chú nhân viên (staffNotes)
+        - Ghi chú admin (adminNote)
+        - Toàn bộ ảnh nhận/giao đồ
+      operationId: adminGetOrderDetail
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '200':
+          description: Lấy chi tiết thành công
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderDetailResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /admin/orders/{id}/status:
+    patch:
+      tags: [Admin — Dashboard & Orders]
+      summary: "[Admin/Staff] Cập nhật trạng thái đơn hàng"
+      description: |
+        **[Yêu cầu role: admin hoặc staff]**
+
+        > ℹ️ **Lưu ý kỹ thuật:** Endpoint này dùng **PATCH** (không phải PUT) vì
+        > chỉ cập nhật một field `status`, không phải toàn bộ resource.
+
+        Cập nhật trạng thái đơn hàng theo luồng hợp lệ. Real-time update được
+        gửi tới khách hàng và các staff khác qua **Socket.io** ngay sau khi cập nhật.
+
+        **Socket event:** `order:statusUpdated` với payload:
+        ```json
+        {
+          "orderId": "64f1a...",
+          "status": "washing",
+          "note": "Bắt đầu giặt",
+          "updatedBy": { "name": "Trần Thị Bảo", "role": "staff" }
+        }
+        ```
+      operationId: adminUpdateOrderStatus
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateOrderStatusRequest'
+            examples:
+              start_washing:
+                summary: Bắt đầu giặt
+                value:
+                  status: "washing"
+                  note: "Bắt đầu giặt lúc 9h sáng"
+              start_drying:
+                summary: Chuyển sang sấy
+                value:
+                  status: "drying"
+                  note: "Giặt xong, đang sấy"
+              out_for_delivery:
+                summary: Bắt đầu giao hàng
+                value:
+                  status: "delivering"
+                  note: "Shipper Minh đang trên đường giao"
+              complete:
+                summary: Hoàn thành đơn
+                value:
+                  status: "completed"
+                  note: "Đã giao thành công lúc 15h30"
+      responses:
+        '200':
+          description: Cập nhật trạng thái thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Cập nhật trạng thái đơn hàng thành công → \"washing\""
+                  data:
+                    type: object
+                    properties:
+                      order:
+                        $ref: '#/components/schemas/Order'
+        '400':
+          description: Trạng thái không hợp lệ hoặc vi phạm luồng trạng thái
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /admin/orders/{id}/staff-notes:
+    post:
+      tags: [Admin — Dashboard & Orders]
+      summary: "[Admin/Staff] Thêm ghi chú nhân viên vào đơn hàng"
+      description: |
+        **[Yêu cầu role: admin hoặc staff]**
+
+        Thêm một ghi chú mới vào danh sách `staffNotes` của đơn hàng.
+        Ghi chú được **append** (không ghi đè ghi chú cũ).
+
+        Ví dụ sử dụng:
+        - "Áo sơ mi bị ố vàng nhẹ, đã dùng tẩy chuyên dụng"
+        - "Khách hẹn giao sau 5h chiều"
+        - "Quần jean màu đậm, giặt riêng"
+      operationId: addStaffNote
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddStaffNoteRequest'
+            example:
+              content: "Áo sơ mi bị ố vàng nhẹ, đã dùng tẩy chuyên dụng. Kết quả tốt."
+      responses:
+        '201':
+          description: Thêm ghi chú thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Thêm ghi chú thành công"
+                  data:
+                    type: object
+                    properties:
+                      staffNotes:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/StaffNote'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /admin/orders/{id}/assign:
+    put:
+      tags: [Admin — Staff Management]
+      summary: "[Admin Only] Phân công nhân viên cho đơn hàng"
+      description: |
+        **[Yêu cầu role: admin — Staff không được phép]**
+
+        Gán nhân viên phụ trách cho đơn hàng. Lấy danh sách nhân viên từ
+        `GET /admin/staff` để hiển thị dropdown chọn nhân viên.
+      operationId: adminAssignStaff
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssignStaffRequest'
+            example:
+              staffId: "64f1a2b3c4d5e6f7a8b9c0d5"
+      responses:
+        '200':
+          description: Phân công thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Phân công nhân viên thành công"
+                  data:
+                    type: object
+                    properties:
+                      order:
+                        $ref: '#/components/schemas/Order'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /admin/orders/{id}/admin-note:
+    put:
+      tags: [Admin — Dashboard & Orders]
+      summary: "[Admin Only] Cập nhật ghi chú Admin"
+      description: |
+        **[Yêu cầu role: admin — Staff không được phép]**
+
+        Cập nhật ghi chú nội bộ của Admin cho đơn hàng (overwrite — chỉ 1 ghi chú tại 1 thời điểm).
+        Truyền chuỗi rỗng `""` để xóa ghi chú.
+
+        Ví dụ sử dụng:
+        - "VIP customer — ưu tiên xử lý"
+        - "Đã xác nhận qua điện thoại lúc 10h sáng"
+        - "Miễn phí ship do lần đầu tiên dùng dịch vụ"
+      operationId: updateAdminNote
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAdminNoteRequest'
+            examples:
+              set_note:
+                summary: Đặt ghi chú mới
+                value:
+                  adminNote: "VIP customer — ưu tiên xử lý"
+              clear_note:
+                summary: Xóa ghi chú (truyền chuỗi rỗng)
+                value:
+                  adminNote: ""
+      responses:
+        '200':
+          description: Cập nhật ghi chú thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Cập nhật ghi chú admin thành công"
+                  data:
+                    type: object
+                    properties:
+                      adminNote:
+                        type: string
+                        example: "VIP customer — ưu tiên xử lý"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /admin/staff:
+    get:
+      tags: [Admin — Staff Management]
+      summary: "[Admin Only] Lấy danh sách nhân viên"
+      description: |
+        **[Yêu cầu role: admin — Staff không được phép xem]**
+
+        Lấy danh sách nhân viên đang hoạt động (`isActive = true`, `role = staff`).
+        Dùng để hiển thị dropdown chọn nhân viên khi phân công đơn hàng.
+      operationId: getStaffList
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: search
+          in: query
+          description: Tìm kiếm theo tên, email hoặc số điện thoại
+          schema:
+            type: string
+            example: "Nguyễn"
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+      responses:
+        '200':
+          description: Lấy danh sách nhân viên thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Lấy danh sách nhân viên thành công"
+                  data:
+                    type: object
+                    properties:
+                      staff:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/User'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+              example:
+                success: true
+                message: "Lấy danh sách nhân viên thành công"
+                data:
+                  staff:
+                    - _id: "64f1a2b3c4d5e6f7a8b9c0d5"
+                      name: "Trần Thị Bảo"
+                      email: "tranthibao@laundry.vn"
+                      phone: "0987654321"
+                      role: "staff"
+                      isActive: true
+                    - _id: "64f1a2b3c4d5e6f7a8b9c0d8"
+                      name: "Lê Văn Cường"
+                      email: "levanncuong@laundry.vn"
+                      phone: "0911222333"
+                      role: "staff"
+                      isActive: true
+                pagination:
+                  total: 8
+                  page: 1
+                  limit: 20
+                  totalPages: 1
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
