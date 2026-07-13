@@ -44,13 +44,16 @@ const sendTokens = (res, user) => {
   const accessToken = signAccessToken(user._id);
   const refreshToken = signRefreshToken(user._id);
 
+  const isProduction = process.env.NODE_ENV === 'production';
+
   // Gửi Refresh Token qua HttpOnly Cookie
+  // SameSite=none + Secure=true bắt buộc khi FE và BE khác domain (Vercel + Render)
   res.cookie('refreshToken', refreshToken, {
-    httpOnly: true,               // JS ở FE KHÔNG đọc được → chống XSS
-    secure: process.env.NODE_ENV === 'production', // Chỉ HTTPS ở production
-    sameSite: 'strict',           // Chống CSRF
-    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 ngày (ms)
-    path: '/api/auth',        // Chỉ gửi cookie cho routes auth
+    httpOnly: true,
+    secure: isProduction,                    // HTTPS only ở production
+    sameSite: isProduction ? 'none' : 'lax', // 'none' cho phép cross-site, 'lax' cho local
+    maxAge: 7 * 24 * 60 * 60 * 1000,        // 7 ngày (ms)
+    path: '/api/auth',
   });
 
   return { user, accessToken };
@@ -119,9 +122,12 @@ const refreshAccessToken = async (req) => {
  * Đăng xuất — xóa refresh token cookie
  */
 const logout = (res) => {
+  const isProduction = process.env.NODE_ENV === 'production';
   res.cookie('refreshToken', '', {
     httpOnly: true,
-    expires: new Date(0), // Hết hạn ngay lập tức
+    secure: isProduction,
+    sameSite: isProduction ? 'none' : 'lax',
+    expires: new Date(0), // H\u1ebft h\u1ea1n ngay l\u1eadp t\u1ee9c
     path: '/api/auth',
   });
 };

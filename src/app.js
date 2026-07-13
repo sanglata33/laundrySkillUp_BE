@@ -24,35 +24,41 @@ const aiRoutes      = require('./routes/ai.routes');      // AI scan module
 
 const app = express();
 
-// ─── Danh sách origins được phép (thêm domain production vào đây) ───────────
+// ─── Danh sách origins được phép ────────────────────────────────────────────
 const ALLOWED_ORIGINS = [
-  'http://localhost:3000',   // React dev
-  'http://localhost:5173',   // Vite dev
-  process.env.CLIENT_URL,   // Production FE URL từ .env
-].filter(Boolean); // Loại bỏ undefined
+  'http://localhost:3000',
+  'http://localhost:5173',
+  process.env.CLIENT_URL, // Production FE URL từ .env
+].filter(Boolean);
 
 // ─── Middleware CORS ─────────────────────────────────────────────────────────
-app.use(cors({
-  /**
-   * Hàm kiểm tra origin động:
-   *  - Dev: cho phép mọi origin trong ALLOWED_ORIGINS
-   *  - Nếu không có origin (vd: Postman, mobile app) → cho phép
-   */
+const corsOptions = {
   origin: (origin, callback) => {
-    if (!origin || ALLOWED_ORIGINS.includes(origin)) {
+    // Cho phép request không có origin (Postman, mobile app, server-to-server)
+    if (!origin) return callback(null, true);
+
+    // Ki\u1ec3m tra exact match ho\u1eb7c Vercel preview URLs (*.vercel.app)
+    const isAllowed =
+      ALLOWED_ORIGINS.includes(origin) ||
+      /https:\/\/.*\.vercel\.app$/.test(origin);
+
+    if (isAllowed) {
       callback(null, true);
     } else {
-      callback(new Error(`CORS: Origin "${origin}" không được phép`));
+      callback(new Error(`CORS: Origin "${origin}" kh\u00f4ng \u0111\u01b0\u1ee3c ph\u00e9p`));
     }
   },
-  credentials: true,              // Bắt buộc để gửi/nhận cookie
+  credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-  exposedHeaders: ['X-Total-Count'], // FE có thể đọc header tổng số bản ghi
-}));
+  exposedHeaders: ['X-Total-Count'],
+  optionsSuccessStatus: 200, // IE11 fix
+};
 
-// Xử lý preflight request (OPTIONS) cho tất cả routes
-app.options('*', cors());
+app.use(cors(corsOptions));
+
+// Xử lý preflight OPTIONS cho tất cả routes
+app.options('*', cors(corsOptions));
 
 // ─── Parse body & cookies ────────────────────────────────────────────────────
 app.use(express.json({ limit: '10mb' }));
