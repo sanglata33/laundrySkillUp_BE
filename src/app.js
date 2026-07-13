@@ -19,6 +19,8 @@ const orderRoutes   = require('./routes/order.routes');
 const serviceRoutes = require('./routes/service.routes');
 const paymentRoutes = require('./routes/payment.routes');
 const adminRoutes   = require('./routes/admin.routes');   // Admin/Staff module
+const aiRoutes      = require('./routes/ai.routes');      // AI scan module
+
 
 const app = express();
 
@@ -71,6 +73,8 @@ app.use('/api/orders',   orderRoutes);
 app.use('/api/services', serviceRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/admin',    adminRoutes);   // Admin/Staff: /api/admin/*
+app.use('/api/ai',       aiRoutes);      // AI: /api/ai/*
+
 
 // Health check
 app.get('/api', (req, res) => {
