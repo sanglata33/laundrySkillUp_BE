@@ -36,83 +36,55 @@ setupSocket(io);
 
 // ─── Kết nối DB rồi mới listen ─────────────────────────────────────────────
 connectDB().then(async () => {
-  // Tự động seed dịch vụ nếu bảng Service trống
+  // ─── Migrate services: đảm bảo đúng 3 dịch vụ chuẩn trong DB ─────────────
+  // ⚠️  Tên service PHẢI khớp với PRODUCT_SERVICE_MAP trong FE/Cart.tsx
   try {
     const Service = require('./src/models/Service.model');
-    const serviceCount = await Service.countDocuments({ isActive: true });
-    if (serviceCount === 0) {
-      console.log('🌱 Database trống. Đang tự động seed các dịch vụ giặt là mẫu...');
-      const defaultServices = [
-        {
-          name: 'Giặt Sấy Sạch Nhanh',
-          description: 'Dịch vụ giặt sấy tiêu chuẩn sử dụng nước giặt hữu cơ, sấy nhiệt độ phù hợp giúp bảo vệ sợi vải.',
-          priceType: 'per_kg',
-          price: 15000,
-          estimatedHours: 4,
-          isActive: true
-        },
-        {
-          name: 'Giặt Sấy Premium (Hương Nước Hoa)',
-          description: 'Nước xả hương nước hoa cao cấp nhập khẩu Pháp. Sấy công nghệ hơi nước giảm nhăn tối đa.',
-          priceType: 'per_kg',
-          price: 25000,
-          estimatedHours: 4,
-          isActive: true
-        },
-        {
-          name: 'Giặt Hấp Vest / Suit',
-          description: 'Quy trình giặt khô chuyên nghiệp cho các bộ Suit, Vest cao cấp. Giữ form dáng chuẩn.',
-          priceType: 'per_item',
-          price: 120000,
-          estimatedHours: 24,
-          isActive: true
-        },
-        {
-          name: 'Giặt Hấp Váy Cưới Cầu Kỳ',
-          description: 'Chăm sóc đặc biệt cho chiếc váy cưới của bạn. Loại bỏ vết ố, bảo vệ ren và hạt cườm.',
-          priceType: 'per_item',
-          price: 350000,
-          estimatedHours: 48,
-          isActive: true
-        },
-        {
-          name: 'Ủi Phẳng Lấy Ngay',
-          description: 'Dịch vụ ủi phẳng bằng bàn ủi hơi nước công nghiệp áp suất lớn. Lấy ngay sau 1 giờ.',
-          priceType: 'per_item',
-          price: 10000,
-          estimatedHours: 2,
-          isActive: true
-        },
-        {
-          name: 'Spa & Giặt Giày Sneaker',
-          description: 'Làm sạch sâu từ trong ra ngoài bằng tay với các dung dịch chuyên dụng. Khử trùng UV.',
-          priceType: 'per_item',
-          price: 80000,
-          estimatedHours: 36,
-          isActive: true
-        },
-        {
-          name: 'Giặt Hấp Thú Bông Cỡ Lớn',
-          description: 'Chăm sóc gấu bông, thú bông của bé yêu. Giặt sạch sâu bụi bẩn tích tụ bên trong.',
-          priceType: 'per_item',
-          price: 90000,
-          estimatedHours: 24,
-          isActive: true
-        },
-        {
-          name: 'Giặt Nệm / Sofa / Rèm',
-          description: 'Vệ sinh sâu cho nệm, sofa và rèm cửa bằng máy phun hút hơi nước nóng diệt khuẩn.',
-          priceType: 'per_item',
-          price: 150000,
-          estimatedHours: 24,
-          isActive: true
-        }
-      ];
-      await Service.insertMany(defaultServices);
-      console.log('✅ Seed dịch vụ giặt là thành công!');
+
+    const CANONICAL_SERVICES = [
+      {
+        // FE map: 'giat-say-tieu-chuan' → keyword ['tieu chuan', 'giat say']
+        name: 'Giặt sấy tiêu chuẩn',
+        description: 'Giặt sấy sạch tiêu chuẩn tính theo kg. Sử dụng nước giặt hữu cơ, sấy nhiệt độ phù hợp bảo vệ sợi vải.',
+        priceType: 'per_kg',
+        price: 25000,
+        estimatedHours: 24,
+        isActive: true
+      },
+      {
+        // FE map: 'giat-hap-ao-vest' → keyword ['hap', 'vest', 'ao vest']
+        name: 'Giặt hấp áo vest',
+        description: 'Giặt hấp cao cấp cho áo vest nam/nữ. Giữ form dáng nguyên bản, bảo vệ chất liệu vải.',
+        priceType: 'per_item',
+        price: 80000,
+        estimatedHours: 48,
+        isActive: true
+      },
+      {
+        // FE map: 'giat-giay-sneaker' → keyword ['giay', 'sneaker']
+        name: 'Giặt giày sneaker',
+        description: 'Làm sạch sâu từ trong ra ngoài bằng tay với các dung dịch chuyên dụng. Khử mùi và sấy khô tia cực tím.',
+        priceType: 'per_item',
+        price: 50000,
+        estimatedHours: 36,
+        isActive: true
+      },
+    ];
+
+    const canonicalNames = CANONICAL_SERVICES.map(s => s.name);
+    const existingCanonical = await Service.countDocuments({ name: { $in: canonicalNames } });
+
+    if (existingCanonical < 3) {
+      // DB thiếu canonical services → xóa hết services cũ và seed lại đúng 3 cái
+      console.log('🔄 Migrate: cập nhật services về 3 dịch vụ chuẩn...');
+      await Service.deleteMany({});
+      await Service.insertMany(CANONICAL_SERVICES);
+      console.log('✅ Migrate thành công: Giặt sấy tiêu chuẩn | Giặt hấp áo vest | Giặt giày sneaker');
+    } else {
+      console.log(`ℹ️  Services OK (${existingCanonical}/3 canonical services hiện diện).`);
     }
-  } catch (seedErr) {
-    console.error('❌ Tự động seed dịch vụ thất bại:', seedErr.message);
+  } catch (migrateErr) {
+    console.error('❌ Migrate services thất bại:', migrateErr.message);
   }
 
   httpServer.listen(PORT, () => {
