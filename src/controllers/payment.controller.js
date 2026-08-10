@@ -51,6 +51,37 @@ const createPayment = async (req, res, next) => {
 };
 
 /**
+ * POST /api/payments/webhook/sepay
+ * SePAY gọi về URL này khi nhận được biến động số dư tài khoản ngân hàng
+ */
+const sepayWebhook = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization || req.headers['x-api-key'];
+    const result = await paymentService.handleSePAYWebhook(req.body, authHeader);
+    return res.status(200).json({ success: true, message: result.message, data: result.payment || null });
+  } catch (err) {
+    // Trả 200/400 JSON theo chuẩn SePAY webhook response
+    return res.status(err.statusCode || 400).json({
+      success: false,
+      message: err.message || 'Lỗi xử lý SePAY Webhook',
+    });
+  }
+};
+
+/**
+ * PATCH /api/payments/:id/confirm
+ * Staff hoặc Admin xác nhận chuyển khoản ngân hàng đã nhận thành công (thủ công)
+ */
+const confirmPayment = async (req, res, next) => {
+  try {
+    const payment = await paymentService.confirmBankTransfer(req.params.id, req.user._id);
+    return ApiResponse.success(res, 200, 'Xác nhận thanh toán chuyển khoản thành công', { payment });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
  * GET /api/payments/vnpay-return
  * VNPay gọi về URL này sau khi người dùng thanh toán
  * (Không cần xác thực JWT — đây là callback từ VNPay)
@@ -73,4 +104,10 @@ const vnpayReturn = async (req, res, next) => {
   }
 };
 
-module.exports = { getPaymentByOrder, createPayment, vnpayReturn };
+module.exports = {
+  getPaymentByOrder,
+  createPayment,
+  vnpayReturn,
+  sepayWebhook,
+  confirmPayment,
+};

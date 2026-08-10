@@ -29,7 +29,7 @@ const PaymentSchema = new mongoose.Schema(
     method: {
       type: String,
       enum: {
-        values: ['cash', 'vnpay', 'momo'],
+        values: ['cash', 'vnpay', 'momo', 'bank_transfer', 'vietqr'],
         message: 'Phương thức thanh toán không hợp lệ',
       },
       required: true,
@@ -54,6 +54,24 @@ const PaymentSchema = new mongoose.Schema(
 
     // Lưu toàn bộ response từ VNPay để đối soát
     vnpayData: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
+    },
+
+    // URL mã QR thanh toán VietQR
+    qrCodeUrl: {
+      type: String,
+      default: null,
+    },
+
+    // Thông tin tài khoản ngân hàng thụ hưởng (VietQR)
+    bankInfo: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
+    },
+
+    // Lưu payload nhận từ Webhook (SePAY / Casso)
+    webhookData: {
       type: mongoose.Schema.Types.Mixed,
       default: null,
     },
