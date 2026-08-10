@@ -109,7 +109,167 @@ const createPayment = async (orderId, method, ipAddr = '127.0.0.1') => {
     return { payment, paymentUrl };
   }
 
+  // ── Thanh toán VietQR / Chuyển khoản ngân hàng ──
+  if (method === 'bank_transfer' || method === 'vietqr') {
+    const bankId      = process.env.VIETQR_BANK_ID      || 'MB';
+    const accountNo   = process.env.VIETQR_ACCOUNT_NO   || '0123456789';
+    const accountName = process.env.VIETQR_ACCOUNT_NAME || 'LAUNDRY SERVICE';
+    const template    = process.env.VIETQR_TEMPLATE    || 'compact2';
+
+    const transferContent = order.orderCode;
+
+    const qrCodeUrl = `https://img.vietqr.io/image/${bankId}-${accountNo}-${template}.png?amount=${order.totalPrice}&addInfo=${encodeURIComponent(transferContent)}&accountName=${encodeURIComponent(accountName)}`;
+
+    const bankInfo = {
+      bankId,
+      accountNo,
+      accountName,
+      amount: order.totalPrice,
+      transferContent,
+    };
+
+    // Kiểm tra xem đã có payment pending trước đó chưa
+    let payment = await Payment.findOne({ order: orderId, status: 'pending' });
+
+    if (payment) {
+      payment.method    = 'bank_transfer';
+      payment.qrCodeUrl = qrCodeUrl;
+      payment.bankInfo  = bankInfo;
+      payment.amount    = order.totalPrice;
+      await payment.save();
+    } else {
+      payment = await Payment.create({
+        order: orderId,
+        amount: order.totalPrice,
+        method: 'bank_transfer',
+        status: 'pending',
+        transactionId,
+        qrCodeUrl,
+        bankInfo,
+      });
+    }
+
+    return { payment, qrCodeUrl, bankInfo };
+  }
+
   throw new AppError('Phương thức thanh toán không được hỗ trợ', 400);
+};
+
+/**
+ * Xử lý Webhook biến động số dư tự động từ SePAY
+ * @param {object} payload - Dữ liệu JSON từ SePAY
+ * @param {string} authHeader - Header Authorization từ request
+ * @returns {{ success: boolean, message: string }}
+ */
+const handleSePAYWebhook = async (payload, authHeader) => {
+  // 1. Kiểm tra API Key bảo mật nếu đã cấu hình SEPAY_WEBHOOK_API_KEY
+  const expectedApiKey = process.env.SEPAY_WEBHOOK_API_KEY;
+  if (expectedApiKey) {
+    const token = authHeader?.replace(/^(Bearer|Apikey)\s+/i, '').trim();
+    if (token !== expectedApiKey && authHeader !== expectedApiKey) {
+      throw new AppError('Webhook Authorization Key không hợp lệ', 401);
+    }
+  }
+
+  // 2. Kiểm tra loại giao dịch (SePAY trả về transferType 'in' khi tiền vào)
+  if (payload.transferType && payload.transferType !== 'in') {
+    return { success: true, message: 'Bỏ qua giao dịch tiền ra (transferType != in)' };
+  }
+
+  // 3. Trích xuất nội dung chuyển khoản để tìm mã đơn hàng
+  const textContent = `${payload.content || ''} ${payload.description || ''} ${payload.code || ''}`;
+  
+  // Tìm pattern mã đơn LD-YYYYMMDD-XXXX hoặc LD...
+  const match = textContent.match(/LD-\d{8}-\d{4}/i);
+  let orderCode = match ? match[0].toUpperCase() : null;
+
+  if (!orderCode) {
+    // Thử tìm bất kỳ orderCode nào xuất hiện trong textContent
+    const activeOrders = await Order.find({ status: { $ne: 'cancelled' } }).select('orderCode');
+    const matchedOrder = activeOrders.find(o => textContent.toUpperCase().includes(o.orderCode.toUpperCase()));
+    if (matchedOrder) {
+      orderCode = matchedOrder.orderCode;
+    }
+  }
+
+  if (!orderCode) {
+    return { success: false, message: 'Không tìm thấy mã đơn hàng trong nội dung chuyển khoản' };
+  }
+
+  // 4. Tìm đơn hàng tương ứng
+  const order = await Order.findOne({ orderCode });
+  if (!order) {
+    throw new AppError(`Không tìm thấy đơn hàng với mã ${orderCode}`, 404);
+  }
+
+  // 5. Tìm hoặc tạo Payment record
+  let payment = await Payment.findOne({ order: order._id });
+  if (!payment) {
+    payment = new Payment({
+      order: order._id,
+      amount: order.totalPrice,
+      method: 'bank_transfer',
+    });
+  }
+
+  if (payment.status === 'paid') {
+    return { success: true, message: 'Đơn hàng đã được thanh toán trước đó' };
+  }
+
+  // 6. Cập nhật trạng thái thành paid
+  payment.status      = 'paid';
+  payment.paidAt      = new Date();
+  payment.webhookData = payload;
+  if (payload.referenceCode || payload.id) {
+    payment.transactionId = `SEPAY_${payload.referenceCode || payload.id}`;
+  }
+
+  await payment.save();
+
+  // 7. Bắn Socket.io thông báo thời gian thực tới Client & Admin
+  if (global._io) {
+    global._io.emit('payment_success', {
+      orderId: order._id,
+      orderCode: order.orderCode,
+      paymentId: payment._id,
+      amount: payload.transferAmount || order.totalPrice,
+    });
+    global._io.to(`order_${order._id}`).emit('order_updated', {
+      orderId: order._id,
+      status: order.status,
+      isPaid: true,
+    });
+  }
+
+  return { success: true, message: `Thanh toán đơn hàng ${orderCode} thành công`, payment };
+};
+
+/**
+ * Admin / Staff xác nhận thanh toán chuyển khoản thủ công
+ * @param {string} paymentId 
+ * @param {string} staffId 
+ */
+const confirmBankTransfer = async (paymentId, staffId) => {
+  const payment = await Payment.findById(paymentId).populate('order');
+  if (!payment) throw new AppError('Không tìm thấy thông tin thanh toán', 404);
+
+  if (payment.status === 'paid') {
+    throw new AppError('Giao dịch này đã được xác nhận thanh toán', 400);
+  }
+
+  payment.status = 'paid';
+  payment.paidAt = new Date();
+  await payment.save();
+
+  if (global._io && payment.order) {
+    global._io.emit('payment_success', {
+      orderId: payment.order._id,
+      orderCode: payment.order.orderCode,
+      paymentId: payment._id,
+    });
+  }
+
+  return payment;
 };
 
 /**
@@ -168,4 +328,10 @@ const buildVNPayParams = (order, transactionId, ipAddr) => {
   };
 };
 
-module.exports = { getPaymentByOrder, createPayment, handleVNPayReturn };
+module.exports = {
+  getPaymentByOrder,
+  createPayment,
+  handleVNPayReturn,
+  handleSePAYWebhook,
+  confirmBankTransfer,
+};
