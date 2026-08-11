@@ -57,8 +57,8 @@ const createPayment = async (orderId, method, ipAddr = '127.0.0.1') => {
   const order = await Order.findById(orderId);
   if (!order) throw new AppError('Không tìm thấy đơn hàng', 404);
 
-  if (order.status !== 'completed') {
-    throw new AppError('Chỉ có thể thanh toán đơn hàng đã hoàn thành', 400);
+  if (order.status === 'cancelled') {
+    throw new AppError('Đơn hàng đã bị hủy, không thể thực hiện thanh toán', 400);
   }
 
   // Kiểm tra đã có giao dịch thành công chưa
@@ -83,6 +83,10 @@ const createPayment = async (orderId, method, ipAddr = '127.0.0.1') => {
       transactionId,
       paidAt: new Date(),
     });
+
+    order.paymentStatus = 'paid';
+    await order.save();
+
     return { payment };
   }
 
@@ -259,6 +263,10 @@ const handleSePAYWebhook = async (payload, authHeader, signature, rawBodyStr) =>
 
   await payment.save();
 
+  // Cập nhật trạng thái thanh toán trên Order model
+  order.paymentStatus = 'paid';
+  await order.save();
+
   // 7. Bắn Socket.io thông báo thời gian thực tới Client & Admin
   if (global._io) {
     global._io.emit('payment_success', {
@@ -293,6 +301,15 @@ const confirmBankTransfer = async (paymentId, staffId) => {
   payment.status = 'paid';
   payment.paidAt = new Date();
   await payment.save();
+
+  if (payment.order) {
+    if (typeof payment.order === 'object' && payment.order.save) {
+      payment.order.paymentStatus = 'paid';
+      await payment.order.save();
+    } else {
+      await Order.findByIdAndUpdate(payment.order, { paymentStatus: 'paid' });
+    }
+  }
 
   if (global._io && payment.order) {
     global._io.emit('payment_success', {

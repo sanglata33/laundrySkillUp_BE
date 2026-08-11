@@ -87,6 +87,20 @@ const OrderSchema = new mongoose.Schema(
       default: 'received',
     },
 
+    // Phương thức thanh toán
+    paymentMethod: {
+      type: String,
+      enum: ['cod', 'bank_transfer', 'cash', 'vnpay', 'vietqr'],
+      default: 'cod',
+    },
+
+    // Trạng thái thanh toán
+    paymentStatus: {
+      type: String,
+      enum: ['unpaid', 'paid', 'refunded'],
+      default: 'unpaid',
+    },
+
     pickupAddress: {
       type: String,
       required: [true, 'Địa chỉ lấy đồ không được để trống'],

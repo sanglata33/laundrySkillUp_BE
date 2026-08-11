@@ -95,7 +95,7 @@ const getOrderById = async (orderId, currentUser) => {
  * @returns {Order}
  */
 const createOrder = async (orderData, customer) => {
-  const { serviceId, quantity, pickupAddress, deliveryAddress, note, scheduledPickupTime } = orderData;
+  const { serviceId, quantity, pickupAddress, deliveryAddress, note, scheduledPickupTime, paymentMethod = 'cod' } = orderData;
 
   // Kiểm tra dịch vụ tồn tại và còn hoạt động
   const service = await Service.findById(serviceId);
@@ -115,6 +115,8 @@ const createOrder = async (orderData, customer) => {
     deliveryAddress,
     note,
     scheduledPickupTime,
+    paymentMethod,
+    paymentStatus: 'unpaid',
   });
 
   // Populate để trả về thông tin đầy đủ
