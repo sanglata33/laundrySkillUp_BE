@@ -57,7 +57,13 @@ const createPayment = async (req, res, next) => {
 const sepayWebhook = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization || req.headers['x-api-key'];
-    const result = await paymentService.handleSePAYWebhook(req.body, authHeader);
+    const signature  = req.headers['x-sepay-signature'];
+    const result = await paymentService.handleSePAYWebhook(
+      req.body,
+      authHeader,
+      signature,
+      JSON.stringify(req.body)
+    );
     return res.status(200).json({ success: true, message: result.message, data: result.payment || null });
   } catch (err) {
     // Trả 200/400 JSON theo chuẩn SePAY webhook response

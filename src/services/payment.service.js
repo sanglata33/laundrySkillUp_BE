@@ -116,7 +116,8 @@ const createPayment = async (orderId, method, ipAddr = '127.0.0.1') => {
     const accountName = process.env.VIETQR_ACCOUNT_NAME || 'LAUNDRY SERVICE';
     const template    = process.env.VIETQR_TEMPLATE    || 'compact2';
 
-    const transferContent = order.orderCode;
+    const prefix          = (process.env.VIETQR_PREFIX || process.env.SEPAY_PREFIX || '').trim();
+    const transferContent = prefix ? `${prefix} ${order.orderCode}` : order.orderCode;
 
     const qrCodeUrl = `https://img.vietqr.io/image/${bankId}-${accountNo}-${template}.png?amount=${order.totalPrice}&addInfo=${encodeURIComponent(transferContent)}&accountName=${encodeURIComponent(accountName)}`;
 
@@ -161,13 +162,32 @@ const createPayment = async (orderId, method, ipAddr = '127.0.0.1') => {
  * @param {string} authHeader - Header Authorization từ request
  * @returns {{ success: boolean, message: string }}
  */
-const handleSePAYWebhook = async (payload, authHeader) => {
-  // 1. Kiểm tra API Key bảo mật nếu đã cấu hình SEPAY_WEBHOOK_API_KEY
+const handleSePAYWebhook = async (payload, authHeader, signature, rawBodyStr) => {
+  // 1. Kiểm tra API Key / HMAC Signature bảo mật nếu đã cấu hình SEPAY_WEBHOOK_API_KEY
   const expectedApiKey = process.env.SEPAY_WEBHOOK_API_KEY;
   if (expectedApiKey) {
-    const token = authHeader?.replace(/^(Bearer|Apikey)\s+/i, '').trim();
-    if (token !== expectedApiKey && authHeader !== expectedApiKey) {
-      throw new AppError('Webhook Authorization Key không hợp lệ', 401);
+    let isValid = false;
+
+    // A. Kiểm tra nếu gửi qua Header Authorization hoặc x-api-key (Phương thức API Key)
+    if (authHeader) {
+      const token = authHeader.replace(/^(Bearer|Apikey)\s+/i, '').trim();
+      if (token === expectedApiKey || authHeader === expectedApiKey) {
+        isValid = true;
+      }
+    }
+
+    // B. Kiểm tra nếu gửi qua x-sepay-signature (Phương thức HMAC-SHA256)
+    if (!isValid && signature) {
+      const bodyToSign = rawBodyStr || JSON.stringify(payload);
+      const hmacHex    = crypto.createHmac('sha256', expectedApiKey).update(bodyToSign).digest('hex');
+      const hmacBase64 = crypto.createHmac('sha256', expectedApiKey).update(bodyToSign).digest('base64');
+      if (signature === hmacHex || signature === hmacBase64) {
+        isValid = true;
+      }
+    }
+
+    if (!isValid) {
+      throw new AppError('Webhook Authorization Key / Signature không hợp lệ', 401);
     }
   }
 
@@ -176,17 +196,30 @@ const handleSePAYWebhook = async (payload, authHeader) => {
     return { success: true, message: 'Bỏ qua giao dịch tiền ra (transferType != in)' };
   }
 
-  // 3. Trích xuất nội dung chuyển khoản để tìm mã đơn hàng
-  const textContent = `${payload.content || ''} ${payload.description || ''} ${payload.code || ''}`;
-  
-  // Tìm pattern mã đơn LD-YYYYMMDD-XXXX hoặc LD...
-  const match = textContent.match(/LD-\d{8}-\d{4}/i);
+  // 3. Trích xuất nội dung chuyển khoản để tìm mã đơn hàng linh hoạt
+  const rawContent = `${payload.content || ''} ${payload.description || ''} ${payload.code || ''} ${payload.transactionContent || ''}`;
+
+  // Match LD-YYYYMMDD-XXXX (có dấu gạch ngang)
+  let match = rawContent.match(/LD-\d{8}-\d{4}/i);
   let orderCode = match ? match[0].toUpperCase() : null;
 
+  // Match LDYYYYMMDDXXXX (nếu ứng dụng ngân hàng bỏ dấu gạch ngang)
   if (!orderCode) {
-    // Thử tìm bất kỳ orderCode nào xuất hiện trong textContent
+    const matchNoHyphen = rawContent.match(/LD\d{12}/i);
+    if (matchNoHyphen) {
+      const str = matchNoHyphen[0].toUpperCase();
+      orderCode = `LD-${str.substring(2, 10)}-${str.substring(10)}`;
+    }
+  }
+
+  // Nếu vẫn chưa khớp, tìm trong danh sách đơn active bằng cách làm sạch chuỗi
+  if (!orderCode) {
     const activeOrders = await Order.find({ status: { $ne: 'cancelled' } }).select('orderCode');
-    const matchedOrder = activeOrders.find(o => textContent.toUpperCase().includes(o.orderCode.toUpperCase()));
+    const cleanRaw = rawContent.replace(/[\s\-_]/g, '').toUpperCase();
+    const matchedOrder = activeOrders.find(o => {
+      const cleanCode = o.orderCode.replace(/[\s\-_]/g, '').toUpperCase();
+      return cleanRaw.includes(cleanCode);
+    });
     if (matchedOrder) {
       orderCode = matchedOrder.orderCode;
     }

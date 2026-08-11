@@ -74,6 +74,12 @@ if (process.env.NODE_ENV === 'development') {
 app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));
 
 // ─── Routes ──────────────────────────────────────────────────────────────────
+const paymentController = require('./controllers/payment.controller');
+
+// Support direct SePAY Webhook URLs configured in SePAY Dashboard
+app.post('/api/sepay-webhook',          paymentController.sepayWebhook);
+app.post('/api/payments/sepay-webhook', paymentController.sepayWebhook);
+
 app.use('/api/auth',     authRoutes);
 app.use('/api/orders',   orderRoutes);
 app.use('/api/services', serviceRoutes);

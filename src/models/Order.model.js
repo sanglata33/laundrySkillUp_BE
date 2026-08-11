@@ -161,24 +161,35 @@ OrderSchema.index({ status: 1 });
 // ─── Tự động sinh orderCode trước khi lưu ───────────────────────────────────
 OrderSchema.pre('save', async function (next) {
   // Sinh orderCode cho đơn mới
-  if (this.isNew) {
-    const today   = new Date();
-    const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
+  if (this.isNew && !this.orderCode) {
+    const now     = new Date();
+    const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '');
+
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+    const endOfDay   = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
 
     const count = await mongoose.model('Order').countDocuments({
-      createdAt: {
-        $gte: new Date(today.setHours(0, 0, 0, 0)),
-        $lt:  new Date(today.setHours(23, 59, 59, 999)),
-      },
+      createdAt: { $gte: startOfDay, $lte: endOfDay },
     });
 
-    this.orderCode = `LD-${dateStr}-${String(count + 1).padStart(4, '0')}`;
+    let seq  = count + 1;
+    let code = `LD-${dateStr}-${String(seq).padStart(4, '0')}`;
 
-    this.statusHistory = [{
-      status:    'received',
-      note:      'Đơn hàng mới được tạo',
-      updatedBy: this.customer,
-    }];
+    // Đảm bảo duy nhất: Tự động tăng seq nếu trùng mã trong database
+    while (await mongoose.model('Order').exists({ orderCode: code })) {
+      seq += 1;
+      code = `LD-${dateStr}-${String(seq).padStart(4, '0')}`;
+    }
+
+    this.orderCode = code;
+
+    if (!this.statusHistory || this.statusHistory.length === 0) {
+      this.statusHistory = [{
+        status:    'received',
+        note:      'Đơn hàng mới được tạo',
+        updatedBy: this.customer,
+      }];
+    }
   }
 
   // Tự động set completedAt khi đơn hoàn thành

@@ -15,6 +15,7 @@ router.get('/vnpay-return', paymentController.vnpayReturn);
 
 // SePAY Webhook callback — KHÔNG cần JWT (SePAY gọi về từ server của họ)
 router.post('/webhook/sepay', paymentController.sepayWebhook);
+router.post('/sepay-webhook', paymentController.sepayWebhook);
 
 // Các routes còn lại cần đăng nhập
 router.use(protect);
