@@ -158,11 +158,33 @@ const assignStaff = async (req, res, next) => {
   }
 };
 
+/**
+ * PUT /api/orders/:id/weight
+ * Cập nhật số kg thực tế & ảnh chụp cân đồ (Staff / Admin)
+ * Body: { actualWeight, weightImageUrl, note }
+ */
+const updateOrderWeight = async (req, res, next) => {
+  try {
+    const { actualWeight, weightImageUrl, note } = req.body;
+    const order = await orderService.updateOrderWeight(
+      req.params.id,
+      actualWeight,
+      weightImageUrl,
+      note,
+      req.user
+    );
+    return ApiResponse.success(res, 200, 'Cập nhật khối lượng & báo giá thành công', { order });
+  } catch (err) {
+    next(err);
+  }
+};
+
 module.exports = {
   getAllOrders,
   getOrderById,
   createOrder,
   updateOrderStatus,
+  updateOrderWeight,
   cancelOrder,
   uploadOrderImages,
   assignStaff,

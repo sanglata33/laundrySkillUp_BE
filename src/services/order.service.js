@@ -299,11 +299,66 @@ const assignStaff = async (orderId, staffId) => {
   return order;
 };
 
+/**
+ * Cập nhật số kg thực tế & ảnh chụp đồ trên cân (Staff/Admin)
+ * Tự động tính lại tổng tiền và chuyển trạng thái sang 'weighed'
+ */
+const updateOrderWeight = async (orderId, actualWeight, weightImageUrl, note, updatedBy) => {
+  const order = await Order.findById(orderId).populate('service');
+  if (!order) throw new AppError('Không tìm thấy đơn hàng', 404);
+
+  if (actualWeight !== undefined && actualWeight !== null && Number(actualWeight) > 0) {
+    const numWeight = Number(actualWeight);
+    order.actualWeight = numWeight;
+    order.quantity = numWeight;
+    if (order.service && order.service.price) {
+      order.totalPrice = numWeight * order.service.price;
+    }
+  }
+
+  if (weightImageUrl) {
+    order.weightImageUrl = weightImageUrl;
+  }
+
+  order.status = 'weighed';
+  order.statusHistory.push({
+    status: 'weighed',
+    note: note || `Nhân viên đã cân đồ: ${order.actualWeight || order.quantity} kg, tổng tiền: ${order.totalPrice?.toLocaleString('vi-VN')}đ`,
+    updatedBy: updatedBy._id,
+    timestamp: new Date(),
+  });
+
+  await order.save();
+  await order.populate([
+    { path: 'customer', select: 'name email phone' },
+    { path: 'staff',    select: 'name email phone' },
+    { path: 'service',  select: 'name priceType price' },
+    { path: 'statusHistory.updatedBy', select: 'name role' },
+  ]);
+
+  try {
+    const io = global._io;
+    if (io) {
+      emitOrderStatusUpdate(io, orderId, {
+        status:         'weighed',
+        actualWeight:   order.actualWeight,
+        weightImageUrl: order.weightImageUrl,
+        totalPrice:     order.totalPrice,
+        note:           note || 'Đã cân đồ & báo giá',
+        updatedBy:      { name: updatedBy.name, role: updatedBy.role },
+      });
+    }
+  } catch (_) {}
+
+  return order;
+};
+
 module.exports = {
   getAllOrders,
   getOrderById,
   createOrder,
   updateOrderStatus,
+  updateOrderWeight,
   cancelOrder,
   saveOrderImages,
   assignStaff,
