@@ -258,6 +258,34 @@ const cancelOrder = async (orderId, currentUser, reason) => {
  * @param {User} uploadedBy
  * @returns {OrderImage[]}
  */
+const fs = require('fs');
+
+/**
+ * Chuyển đổi file Multer thành Base64 Data URI (Data URL)
+ * Đảm bảo 100% ảnh xem được trên Vercel / Render mà không phụ thuộc vào ổ đĩa server
+ */
+const fileToDataUri = (file) => {
+  if (!file) return '';
+  if (file.path && (file.path.startsWith('http://') || file.path.startsWith('https://') || file.path.startsWith('data:'))) {
+    return file.path;
+  }
+  try {
+    if (file.path && fs.existsSync(file.path)) {
+      const fileBuffer = fs.readFileSync(file.path);
+      const mime = file.mimetype || 'image/jpeg';
+      return `data:${mime};base64,${fileBuffer.toString('base64')}`;
+    }
+  } catch (err) {
+    console.warn('fileToDataUri fallback:', err);
+  }
+  let cleanUrl = file.path || '';
+  const uploadsIdx = cleanUrl.indexOf('uploads');
+  if (uploadsIdx !== -1) {
+    cleanUrl = '/' + cleanUrl.substring(uploadsIdx).replace(/\\/g, '/');
+  }
+  return cleanUrl;
+};
+
 const saveOrderImages = async (orderId, files, imageType, uploadedBy) => {
   if (!files || files.length === 0) {
     throw new AppError('Không có ảnh nào được upload', 400);
@@ -267,22 +295,13 @@ const saveOrderImages = async (orderId, files, imageType, uploadedBy) => {
   const order = await Order.findById(orderId);
   if (!order) throw new AppError('Không tìm thấy đơn hàng', 404);
 
-  // Tạo records cho từng ảnh
-  // Chuyển đường dẫn local (nếu có) thành URL web /uploads/...
+  // Tạo records cho từng ảnh (tự động sang Base64 Data URI / Cloudinary URL)
   const imageRecords = files.map((file) => {
-    let cleanUrl = file.path || '';
-    if (cleanUrl && !cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://')) {
-      const uploadsIdx = cleanUrl.indexOf('uploads');
-      if (uploadsIdx !== -1) {
-        cleanUrl = '/' + cleanUrl.substring(uploadsIdx).replace(/\\/g, '/');
-      } else if (file.filename) {
-        cleanUrl = `/uploads/${orderId}/${file.filename}`;
-      }
-    }
+    const finalUrl = fileToDataUri(file);
     return {
       order: orderId,
       uploadedBy: uploadedBy._id,
-      imageUrl: cleanUrl,
+      imageUrl: finalUrl,
       imageType,
       metadata: {
         originalName: file.originalname,
