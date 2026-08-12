@@ -30,24 +30,24 @@ router
   .get(orderController.getOrderById)          // Xem chi tiết
   .delete(orderController.cancelOrder);       // Hủy đơn
 
-// ── Cập nhật trạng thái (staff và admin) ────────────────────────────────────
+// ── Cập nhật trạng thái (staff, shipper và admin) ─────────────────────────
 router.put(
   '/:id/status',
-  restrictTo('admin', 'staff'),
+  restrictTo('admin', 'staff', 'shipper'),
   orderController.updateOrderStatus
 );
 
-// ── Cập nhật số kg thực tế & ảnh cân đồ (staff và admin) ─────────────────────
+// ── Cập nhật số kg thực tế & ảnh cân đồ (staff, shipper và admin) ─────────
 router.put(
   '/:id/weight',
-  restrictTo('admin', 'staff'),
+  restrictTo('admin', 'staff', 'shipper'),
   orderController.updateOrderWeight
 );
 
-// ── Upload ảnh nhận/giao đồ (staff và admin) ────────────────────────────────
+// ── Upload ảnh nhận/giao đồ (staff, shipper và admin) ────────────────────
 router.post(
   '/:id/images',
-  restrictTo('admin', 'staff'),
+  restrictTo('admin', 'staff', 'shipper'),
   handleCloudUpload,                          // Cloudinary (cloud) hoặc local (dev fallback)
   orderController.uploadOrderImages
 );

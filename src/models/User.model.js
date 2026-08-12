@@ -68,8 +68,8 @@ const UserSchema = new mongoose.Schema(
     role: {
       type: String,
       enum: {
-        values: ['customer', 'staff', 'admin'],
-        message: 'Role phải là customer, staff hoặc admin',
+        values: ['customer', 'staff', 'shipper', 'admin'],
+        message: 'Role phải là customer, staff, shipper hoặc admin',
       },
       default: 'customer',
     },

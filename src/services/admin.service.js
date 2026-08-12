@@ -442,7 +442,7 @@ const getAllUsers = async (queryParams = {}) => {
  * @returns {User}
  */
 const updateUserRole = async (targetUserId, newRole, currentAdmin) => {
-  const VALID_ROLES = ['customer', 'staff', 'admin'];
+  const VALID_ROLES = ['customer', 'staff', 'shipper', 'admin'];
   if (!VALID_ROLES.includes(newRole)) {
     throw new AppError(`Vai trò không hợp lệ. Chỉ chấp nhận: ${VALID_ROLES.join(', ')}`, 400);
   }
