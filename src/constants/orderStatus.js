@@ -19,7 +19,9 @@
 
 // ─── Enum trạng thái ─────────────────────────────────────────────────────────
 const ORDER_STATUS = Object.freeze({
-  RECEIVED:   'received',    // Đơn mới được tạo, chờ nhân viên đến lấy
+  RECEIVED:   'received',    // Đã nhận đơn (Hệ thống đã tiếp nhận, chưa tới lấy)
+  PICKED_UP:  'picked_up',   // Đã lấy đồ (Nhân viên đã đến nhà lấy đồ đem về tiệm)
+  WEIGHED:    'weighed',     // Đã cân đồ & Báo giá (Đã cân khối lượng thực tế, tải ảnh cân & hiện QR thanh toán)
   WASHING:    'washing',     // Đang giặt
   DRYING:     'drying',      // Đang sấy/ủi
   DELIVERING: 'delivering',  // Đang giao trả khách
@@ -33,6 +35,8 @@ const ORDER_STATUS_VALUES = Object.values(ORDER_STATUS);
 // ─── Tên hiển thị tiếng Việt ─────────────────────────────────────────────────
 const ORDER_STATUS_LABELS = Object.freeze({
   [ORDER_STATUS.RECEIVED]:   '📦 Đã nhận đơn',
+  [ORDER_STATUS.PICKED_UP]:  '🛵 Đã lấy đồ',
+  [ORDER_STATUS.WEIGHED]:    '⚖️ Đã cân đồ & Báo giá',
   [ORDER_STATUS.WASHING]:    '🫧 Đang giặt',
   [ORDER_STATUS.DRYING]:     '🌬️ Đang sấy/ủi',
   [ORDER_STATUS.DELIVERING]: '🚚 Đang giao',
@@ -43,6 +47,8 @@ const ORDER_STATUS_LABELS = Object.freeze({
 // ─── Màu badge (dùng cho FE sau này) ─────────────────────────────────────────
 const ORDER_STATUS_COLORS = Object.freeze({
   [ORDER_STATUS.RECEIVED]:   'blue',
+  [ORDER_STATUS.PICKED_UP]:  'amber',
+  [ORDER_STATUS.WEIGHED]:    'indigo',
   [ORDER_STATUS.WASHING]:    'cyan',
   [ORDER_STATUS.DRYING]:     'orange',
   [ORDER_STATUS.DELIVERING]: 'purple',
@@ -53,8 +59,10 @@ const ORDER_STATUS_COLORS = Object.freeze({
 // ─── Luồng chuyển trạng thái hợp lệ ─────────────────────────────────────────
 // Key: trạng thái hiện tại → Value: danh sách trạng thái có thể chuyển sang
 const VALID_TRANSITIONS = Object.freeze({
-  [ORDER_STATUS.RECEIVED]:   [ORDER_STATUS.WASHING,   ORDER_STATUS.CANCELLED],
-  [ORDER_STATUS.WASHING]:    [ORDER_STATUS.DRYING,    ORDER_STATUS.CANCELLED],
+  [ORDER_STATUS.RECEIVED]:   [ORDER_STATUS.PICKED_UP, ORDER_STATUS.WASHING, ORDER_STATUS.CANCELLED],
+  [ORDER_STATUS.PICKED_UP]:  [ORDER_STATUS.WEIGHED, ORDER_STATUS.WASHING, ORDER_STATUS.CANCELLED],
+  [ORDER_STATUS.WEIGHED]:    [ORDER_STATUS.WASHING, ORDER_STATUS.CANCELLED],
+  [ORDER_STATUS.WASHING]:    [ORDER_STATUS.DRYING, ORDER_STATUS.CANCELLED],
   [ORDER_STATUS.DRYING]:     [ORDER_STATUS.DELIVERING, ORDER_STATUS.CANCELLED],
   [ORDER_STATUS.DELIVERING]: [ORDER_STATUS.COMPLETED, ORDER_STATUS.CANCELLED],
   [ORDER_STATUS.COMPLETED]:  [], // Trạng thái cuối — không thể chuyển tiếp

@@ -37,6 +37,13 @@ router.put(
   orderController.updateOrderStatus
 );
 
+// ── Cập nhật số kg thực tế & ảnh cân đồ (staff và admin) ─────────────────────
+router.put(
+  '/:id/weight',
+  restrictTo('admin', 'staff'),
+  orderController.updateOrderWeight
+);
+
 // ── Upload ảnh nhận/giao đồ (staff và admin) ────────────────────────────────
 router.post(
   '/:id/images',

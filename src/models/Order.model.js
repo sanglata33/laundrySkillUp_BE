@@ -71,10 +71,23 @@ const OrderSchema = new mongoose.Schema(
       min: [0.1, 'Số lượng phải lớn hơn 0'],
     },
 
-    // Tổng tiền (tính tự động trong pre-save)
+    // Tổng tiền (tính tự động trong pre-save hoặc khi staff cân đồ)
     totalPrice: {
       type: Number,
       min: 0,
+    },
+
+    // Số kg thực tế sau khi nhân viên nhận và cân tại cửa hàng
+    actualWeight: {
+      type: Number,
+      min: 0,
+      default: null,
+    },
+
+    // Ảnh chụp khối lượng quần áo trên cân (xác thực với khách hàng)
+    weightImageUrl: {
+      type: String,
+      default: '',
     },
 
     // Trạng thái đơn hàng — dùng enum từ constants/orderStatus.js
