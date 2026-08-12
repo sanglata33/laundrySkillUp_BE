@@ -50,8 +50,19 @@ const getAllOrders = async (currentUser, queryParams = {}) => {
     .skip(skip)
     .limit(parseInt(limit));
 
+  // Lấy tất cả ảnh xác thực của các đơn hàng này
+  const orderIds = orders.map((o) => o._id);
+  const allImages = await OrderImage.find({ order: { $in: orderIds } }).lean();
+
+  // Đính kèm mảng images vào từng order
+  const ordersWithImages = orders.map((order) => {
+    const orderObj = order.toObject();
+    orderObj.images = allImages.filter((img) => img.order.toString() === order._id.toString());
+    return orderObj;
+  });
+
   return {
-    orders,
+    orders: ordersWithImages,
     total,
     page: parseInt(page),
     totalPages: Math.ceil(total / limit),
@@ -256,27 +267,30 @@ const saveOrderImages = async (orderId, files, imageType, uploadedBy) => {
   const order = await Order.findById(orderId);
   if (!order) throw new AppError('Không tìm thấy đơn hàng', 404);
 
-  // Kiểm tra trạng thái hợp lệ để upload ảnh
-  if (imageType === 'pickup' && order.status !== 'received') {
-    throw new AppError('Chỉ upload ảnh nhận đồ khi đơn ở trạng thái "Đã nhận"', 400);
-  }
-  if (imageType === 'delivery' && order.status !== 'delivering') {
-    throw new AppError('Chỉ upload ảnh giao đồ khi đơn ở trạng thái "Đang giao"', 400);
-  }
-
   // Tạo records cho từng ảnh
-  // file.path = URL Cloudinary (cloud) hoặc đường dẫn local (dev)
-  const imageRecords = files.map((file) => ({
-    order: orderId,
-    uploadedBy: uploadedBy._id,
-    imageUrl: file.path, // Cloudinary trả về URL đầy đủ trong file.path
-    imageType,
-    metadata: {
-      originalName: file.originalname,
-      mimetype:     file.mimetype,
-      size:         file.size,
-    },
-  }));
+  // Chuyển đường dẫn local (nếu có) thành URL web /uploads/...
+  const imageRecords = files.map((file) => {
+    let cleanUrl = file.path || '';
+    if (cleanUrl && !cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://')) {
+      const uploadsIdx = cleanUrl.indexOf('uploads');
+      if (uploadsIdx !== -1) {
+        cleanUrl = '/' + cleanUrl.substring(uploadsIdx).replace(/\\/g, '/');
+      } else if (file.filename) {
+        cleanUrl = `/uploads/${orderId}/${file.filename}`;
+      }
+    }
+    return {
+      order: orderId,
+      uploadedBy: uploadedBy._id,
+      imageUrl: cleanUrl,
+      imageType,
+      metadata: {
+        originalName: file.originalname,
+        mimetype:     file.mimetype,
+        size:         file.size,
+      },
+    };
+  });
 
   const savedImages = await OrderImage.insertMany(imageRecords);
   return savedImages;
@@ -317,7 +331,14 @@ const updateOrderWeight = async (orderId, actualWeight, weightImageUrl, note, up
   }
 
   if (weightImageUrl) {
-    order.weightImageUrl = weightImageUrl;
+    let cleanUrl = weightImageUrl;
+    if (cleanUrl && !cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://')) {
+      const uploadsIdx = cleanUrl.indexOf('uploads');
+      if (uploadsIdx !== -1) {
+        cleanUrl = '/' + cleanUrl.substring(uploadsIdx).replace(/\\/g, '/');
+      }
+    }
+    order.weightImageUrl = cleanUrl;
   }
 
   order.status = 'weighed';
